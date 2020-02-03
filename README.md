@@ -21,10 +21,12 @@ Run `prefix` + `I` to install plugins.
 
 ### Key bindings
 `prefix` + `space` -> hit a character -> hit hints.
+
 Then, cursor will move to the position of the character in tmux copy-mode.
 
 ### Inspire by
 [vim-easymotion](https://github.com/easymotion/vim-easymotion)
+
 [tmux-yank](https://github.com/tmux-plugins/tmux-yank)
 
 ### Known issues
