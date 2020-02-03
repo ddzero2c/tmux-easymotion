@@ -14,7 +14,7 @@ def tmux_pane_id():
     pyshell('tmux last-window')
     id = pyshell('tmux display-message -p "#{pane_id}"').strip()
     pyshell('tmux last-window')
-    if re.fullmatch(id_pattern, id):
+    if re.match(id_pattern, id):
         return id
     else:
         '%0'
@@ -44,6 +44,7 @@ GREEN = 2
 def main(stdscr):
     pane_id = tmux_pane_id()
     captured_pane = tmux_capture_pane(pane_id)
+
     # invisible cursor
     curses.curs_set(False)
 
@@ -67,8 +68,8 @@ def main(stdscr):
     stdscr.refresh()
     search_ch = chr(stdscr.getch())
 
-    positions = [m.start() for m in re.finditer(search_ch, captured_pane)]
-    fixed_positions = [m.start() for m in re.finditer(search_ch, fixed_width_pane)]
+    positions = [m.start() for m in re.finditer(search_ch, captured_pane.lower())]
+    fixed_positions = [m.start() for m in re.finditer(search_ch, fixed_width_pane.lower())]
 
     for i, p in enumerate(fixed_positions):
         x = p % width
@@ -78,7 +79,11 @@ def main(stdscr):
             stdscr.addstr(y, x+1, hints[i][1], curses.color_pair(GREEN))
     stdscr.refresh()
     ch1 = chr(stdscr.getch())
+    if  ch1 not in KEYS:
+        exit(0)
     ch2 = chr(stdscr.getch())
+    if  ch2 not in KEYS:
+        exit(0)
     tmux_move_cursor(pane_id, positions[hints_dict[ch1+ch2]])
 
 curses.wrapper(main)
