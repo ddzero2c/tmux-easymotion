@@ -66,11 +66,11 @@ def main(stdscr):
 
     stdscr.addstr(0, 0, fixed_width_pane)
     stdscr.refresh()
-    search_ch = chr(stdscr.getch())
+    search_ch = stdscr.getkey()
 
     positions = [m.start() for m in re.finditer(search_ch, captured_pane.lower())]
     fixed_positions = [m.start() for m in re.finditer(search_ch, fixed_width_pane.lower())]
-
+    # render hints
     for i, p in enumerate(fixed_positions):
         x = p % width
         y = p // width
@@ -78,10 +78,21 @@ def main(stdscr):
         if p+1 < len(fixed_width_pane):
             stdscr.addstr(y, x+1, hints[i][1], curses.color_pair(GREEN))
     stdscr.refresh()
-    ch1 = chr(stdscr.getch())
+
+    ch1 = stdscr.getkey()
     if  ch1 not in KEYS:
         exit(0)
-    ch2 = chr(stdscr.getch())
+
+    stdscr.addstr(0, 0, fixed_width_pane)
+    for i, p in enumerate(fixed_positions):
+        if not hints[i].startswith(ch1) or len(hints[i]) < 2:
+            continue
+        x = p % width
+        y = p // width
+        stdscr.addstr(y, x, hints[i][1], curses.color_pair(RED))
+    stdscr.refresh()
+
+    ch2 = stdscr.getkey()
     if  ch2 not in KEYS:
         exit(0)
     tmux_move_cursor(pane_id, positions[hints_dict[ch1+ch2]])

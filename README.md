@@ -31,5 +31,3 @@ Then, cursor will move to the position of the character in tmux copy-mode.
 ### Known issues
 - Render wield when tmux pane contain wide character.
     - ex. `'哈哈'`.
-- Can't locate double character.
-    - ex. `'hook'`
