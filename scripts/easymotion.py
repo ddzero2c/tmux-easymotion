@@ -70,7 +70,8 @@ def main(stdscr):
 
     positions = [m.start() for m in re.finditer(search_ch, captured_pane.lower())]
     fixed_positions = [m.start() for m in re.finditer(search_ch, fixed_width_pane.lower())]
-    # render hints
+
+    # render 1st hints
     for i, p in enumerate(fixed_positions):
         x = p % width
         y = p // width
@@ -83,13 +84,14 @@ def main(stdscr):
     if  ch1 not in KEYS:
         exit(0)
 
+    # render 2nd hints
     stdscr.addstr(0, 0, fixed_width_pane)
     for i, p in enumerate(fixed_positions):
         if not hints[i].startswith(ch1) or len(hints[i]) < 2:
             continue
         x = p % width
         y = p // width
-        stdscr.addstr(y, x, hints[i][1], curses.color_pair(RED))
+        stdscr.addstr(y, x, hints[i][1], curses.color_pair(GREEN))
     stdscr.refresh()
 
     ch2 = stdscr.getkey()
