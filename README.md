@@ -25,9 +25,8 @@ Run `prefix` + `I` to install plugins.
 Then, cursor will move to the position of the character in tmux copy-mode.
 
 ### Inspire by
-[vim-easymotion](https://github.com/easymotion/vim-easymotion)
-
-[tmux-yank](https://github.com/tmux-plugins/tmux-yank)
+- [vim-easymotion](https://github.com/easymotion/vim-easymotion)
+- [tmux-yank](https://github.com/tmux-plugins/tmux-yank)
 
 ### Known issues
 - Render wield when tmux pane contain wide character.
