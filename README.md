@@ -21,6 +21,7 @@ Run `prefix` + `I` to install plugins.
 
 ### Key bindings
 `prefix` + `/` -> hit a character -> hit hints (jump to position) -> press `Enter` to copy
+
 `prefix` + `]` to paste
 
 Configure vim-like movement:
