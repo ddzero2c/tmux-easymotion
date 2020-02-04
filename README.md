@@ -1,4 +1,4 @@
-# Tmux Easymotion
+# TMUX Easymotion
 
 ### Requirements
 - Python3
@@ -20,13 +20,27 @@ run -b '~/.tmux/plugins/tpm/tpm'
 Run `prefix` + `I` to install plugins.
 
 ### Key bindings
-`prefix` + `/` -> hit a character -> hit hints.
+`prefix` + `/` -> hit a character -> hit hints (jump to position) -> press `Enter` to copy
+`prefix` + `]` to paste
 
-Then, cursor will move to the position of the character in tmux copy-mode.
+Configure vim-like movement:
+```
+# .tmux.conf
+set-window-option -g mode-keys vi
+bind-key -T copy-mode-vi C-v send-keys -X begin-selection \; send-keys -X rectangle-toggle;
+bind-key -T copy-mode-vi v send-keys -X begin-selection;
+bind-key -T copy-mode-vi V send-keys -X select-line;
+
+...
+run -b '~/.tmux/plugins/tpm/tpm'
+```
+
+`FIXME: demo screenshot`
 
 ### Inspire by
-- [vim-easymotion](https://github.com/easymotion/vim-easymotion)
+- [tpm](https://github.com/tmux-plugins/tpm)
 - [tmux-yank](https://github.com/tmux-plugins/tmux-yank)
+- [vim-easymotion](https://github.com/easymotion/vim-easymotion)
 
 ### Known issues
 - Render wield when tmux pane contain wide character.
