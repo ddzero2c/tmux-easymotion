@@ -20,7 +20,7 @@ run -b '~/.tmux/plugins/tpm/tpm'
 Run `prefix` + `I` to install plugins.
 
 ### Key bindings
-`prefix` + `space` -> hit a character -> hit hints.
+`prefix` + `/` -> hit a character -> hit hints.
 
 Then, cursor will move to the position of the character in tmux copy-mode.
 
