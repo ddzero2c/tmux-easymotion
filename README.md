@@ -20,22 +20,21 @@ run -b '~/.tmux/plugins/tpm/tpm'
 Run `prefix` + `I` to install plugins.
 
 ### Key bindings
-Configuration (vim-like)
+`prefix` + `/` -> hit a character -> hit hints (jump to position) -> press `Enter` to copy
+
+`prefix` + `]` to paste
+
+Configure vim-like movement:
 ```
 # .tmux.conf
 set-window-option -g mode-keys vi
 bind-key -T copy-mode-vi C-v send-keys -X begin-selection \; send-keys -X rectangle-toggle;
 bind-key -T copy-mode-vi v send-keys -X begin-selection;
 bind-key -T copy-mode-vi V send-keys -X select-line;
-bind-key -n C-k paste-buffer
 
 ...
 run -b '~/.tmux/plugins/tpm/tpm'
 ```
-
-`C-j` -> hit a character -> hit hints (jump to position) -> press `y` to copy
-
-`C-k` to paste
 
 `FIXME: demo screenshot`
 
