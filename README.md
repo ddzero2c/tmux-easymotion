@@ -1,5 +1,7 @@
 # TMUX Easymotion
 
+![demo](https://user-images.githubusercontent.com/20437334/109680947-f1bf2680-7bb7-11eb-9990-1deb3d5a5736.gif)
+
 ### Requirements
 - Python3
 - [Tmux Plugin Manager](https://github.com/tmux-plugins/tpm)
@@ -35,8 +37,6 @@ bind-key -T copy-mode-vi V send-keys -X select-line;
 ...
 run -b '~/.tmux/plugins/tpm/tpm'
 ```
-
-`FIXME: demo screenshot`
 
 ### Inspire by
 - [tpm](https://github.com/tmux-plugins/tpm)
