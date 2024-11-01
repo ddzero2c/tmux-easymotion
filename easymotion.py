@@ -105,12 +105,8 @@ def tmux_move_cursor(pane_id, position):
     pyshell(f'tmux send-keys -X -t {pane_id} -N {position} cursor-right')
 
 def generate_hints(keys):
-    def _generate_hints(keys):
-        hints = [''.join(k) for k in itertools.product(keys, keys)]
-        while hints:
-            yield hints.pop(0)
-
-    return [h for h in _generate_hints(keys)]
+    """Generate two-character hints from key set more efficiently"""
+    return [k1 + k2 for k1 in keys for k2 in keys]
 
 RED = 1
 GREEN = 2
