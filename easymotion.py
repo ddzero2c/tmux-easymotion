@@ -54,7 +54,8 @@ def tmux_capture_pane(pane_id):
         # When scrolled up, use negative numbers to capture from history
         # -scroll_pos is where we are in history
         # -(scroll_pos - curses.LINES + 1) captures one screen worth from there
-        cmd = f'tmux capture-pane -p -S -{scroll_pos} -E -{scroll_pos - curses.LINES + 1} -t {pane_id}'
+        end_pos = -(scroll_pos - curses.LINES + 1)  # Calculate separately to avoid string formatting issues
+        cmd = f'tmux capture-pane -p -S -{scroll_pos} -E {end_pos} -t {pane_id}'
     else:
         # If not scrolled, just capture current view (default behavior)
         cmd = f'tmux capture-pane -p -t {pane_id}'
