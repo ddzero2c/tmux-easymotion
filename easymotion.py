@@ -46,7 +46,18 @@ def cleanup_window():
         pyshell('tmux kill-window')
 
 def tmux_capture_pane(pane_id):
-    return pyshell('tmux capture-pane -p -t {}'.format(pane_id))[:-1]
+    scroll_pos = get_scroll_position(pane_id)
+    
+    if scroll_pos > 0:
+        # When scrolled up, use negative numbers to capture from history
+        # -scroll_pos is where we are in history
+        # -(scroll_pos - curses.LINES + 1) captures one screen worth from there
+        cmd = f'tmux capture-pane -p -S -{scroll_pos} -E -{scroll_pos - curses.LINES + 1} -t {pane_id}'
+    else:
+        # If not scrolled, just capture current view (default behavior)
+        cmd = f'tmux capture-pane -p -t {pane_id}'
+    
+    return pyshell(cmd)[:-1]
 
 def fill_pane_content_with_space(pane_content, width):
     lines = pane_content.splitlines()
@@ -57,9 +68,25 @@ def fill_pane_content_with_space(pane_content, width):
         result.append(line + ' ' * padding)
     return '\n'.join(result)
 
+def get_scroll_position(pane_id):
+    # First check if we're in copy-mode
+    copy_mode = pyshell(f'tmux display-message -p -t {pane_id} "#{{pane_in_mode}}"').strip()
+    if copy_mode != "1":
+        return 0
+        
+    # Get scroll position only if in copy-mode
+    scroll_pos = pyshell(f'tmux display-message -p -t {pane_id} "#{{scroll_position}}"').strip()
+    try:
+        return int(scroll_pos)
+    except ValueError:
+        return 0
+
 def tmux_move_cursor(pane_id, position):
-    pyshell('tmux copy-mode -t {id}; tmux send-keys -X -t {id} top-line; tmux send-keys -X -t {id} -N {pos} cursor-right'
-            .format(id=pane_id, pos=position))
+    # First ensure we're in copy mode
+    pyshell(f'tmux copy-mode -t {pane_id}')
+    # Move to top and then navigate to position
+    pyshell(f'tmux send-keys -X -t {pane_id} top-line')
+    pyshell(f'tmux send-keys -X -t {pane_id} -N {position} cursor-right')
 
 def generate_hints(keys):
     def _generate_hints(keys):
@@ -74,6 +101,7 @@ GREEN = 2
 
 def main(stdscr):
     pane_id = tmux_pane_id()
+    scroll_position = get_scroll_position(pane_id)
     captured_pane = tmux_capture_pane(pane_id)
 
     # invisible cursor
@@ -149,7 +177,13 @@ def main(stdscr):
     target_pos = positions[hints_dict[ch1+ch2]]
     line_offset = sum(len(line) + 1 for line in lines[:target_pos[0]])
     final_pos = line_offset + target_pos[1]
-    tmux_move_cursor(pane_id, final_pos)
+    
+    # Adjust for scroll position
+    if scroll_position > 0:
+        tmux_move_cursor(pane_id, final_pos)
+    else:
+        # If not scrolled, move to absolute position
+        tmux_move_cursor(pane_id, final_pos)
     cleanup_window()
 
 curses.wrapper(main)
