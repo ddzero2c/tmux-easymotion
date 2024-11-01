@@ -7,13 +7,26 @@ import unicodedata
 
 KEYS='asdghklqwertyuiopzxcvbnmfj'
 
+def get_char_width(char):
+    """Get visual width of a single character"""
+    return 2 if unicodedata.east_asian_width(char) in 'WF' else 1
+
 def get_string_width(s):
     """Calculate visual width of string, accounting for double-width characters"""
     width = 0
     for c in s:
-        # East Asian Width (W, F) characters are full width (2 columns)
-        width += 2 if unicodedata.east_asian_width(c) in 'WF' else 1
+        width += get_char_width(c)
     return width
+
+def get_true_position(line, target_col):
+    """Calculate true position accounting for wide characters"""
+    visual_pos = 0
+    true_pos = 0
+    while true_pos < len(line) and visual_pos < target_col:
+        char_width = get_char_width(line[true_pos])
+        visual_pos += char_width
+        true_pos += 1
+    return true_pos
 
 def pyshell(cmd):
     debug = os.environ.get('TMUX_EASYMOTION_DEBUG') == 'true'
@@ -140,18 +153,19 @@ def main(stdscr):
     lines = captured_pane.splitlines()
     for line_num, line in enumerate(lines):
         for match in re.finditer(search_ch, line.lower()):
-            col = match.start()
-            positions.append((line_num, col))
+            visual_col = sum(get_char_width(c) for c in line[:match.start()])
+            positions.append((line_num, visual_col, line[match.start()]))
 
     # render 1st hints
-    for i, (line_num, col) in enumerate(positions):
+    for i, (line_num, col, char) in enumerate(positions):
         if i >= len(hints):
             break
         y = line_num
         x = col
         stdscr.addstr(y, x, hints[i][0], curses.color_pair(RED))
-        if x+1 < width:
-            stdscr.addstr(y, x+1, hints[i][1], curses.color_pair(GREEN))
+        char_width = get_char_width(char)
+        if x + char_width < width:
+            stdscr.addstr(y, x + char_width, hints[i][1], curses.color_pair(GREEN))
     stdscr.refresh()
 
     ch1 = stdscr.getkey()
@@ -164,12 +178,14 @@ def main(stdscr):
             stdscr.addstr(y, 0, line)
         except curses.error:
             pass
-    for i, (line_num, col) in enumerate(positions):
+    for i, (line_num, col, char) in enumerate(positions):
         if not hints[i].startswith(ch1) or len(hints[i]) < 2:
             continue
         y = line_num
         x = col
-        stdscr.addstr(y, x, hints[i][1], curses.color_pair(GREEN))
+        char_width = get_char_width(char)
+        if x + char_width < width:
+            stdscr.addstr(y, x + char_width, hints[i][1], curses.color_pair(GREEN))
     stdscr.refresh()
 
     ch2 = stdscr.getkey()
@@ -179,7 +195,8 @@ def main(stdscr):
     # Calculate final position based on line and column
     target_pos = positions[hints_dict[ch1+ch2]]
     line_offset = sum(len(line) + 1 for line in lines[:target_pos[0]])
-    final_pos = line_offset + target_pos[1]
+    true_col = get_true_position(lines[target_pos[0]], target_pos[1])
+    final_pos = line_offset + true_col  # Convert visual position to true position
     
     # Adjust for scroll position
     if scroll_position > 0:
