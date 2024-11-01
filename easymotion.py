@@ -5,7 +5,7 @@ import os
 import itertools
 import unicodedata
 
-KEYS='asdghklqwertyuiopzxcvbnmfj'
+KEYS='asdfghjkl;'
 
 def get_char_width(char):
     """Get visual width of a single character"""
