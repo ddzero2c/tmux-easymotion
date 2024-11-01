@@ -14,7 +14,7 @@ bind s run-shell "tmux neww ~/.tmux-easymotion/easymotion.py"
 ```
 
 ### Key bindings
-`prefix` + `s` -> hit a character -> hit hints (jump to position) -> press `Enter` to copy
+`prefix` + `/` -> hit a character -> hit hints (jump to position) -> press `Enter` to copy
 
 `prefix` + `]` to paste
 
