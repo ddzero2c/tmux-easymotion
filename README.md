@@ -2,27 +2,19 @@
 
 ![demo](https://user-images.githubusercontent.com/20437334/109680947-f1bf2680-7bb7-11eb-9990-1deb3d5a5736.gif)
 
-### Requirements
-- Python3
-- [Tmux Plugin Manager](https://github.com/tmux-plugins/tpm)
-
 ### Installation
 
 Clone TPM
-`$ git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm`
+`$ git clone https://github.com/ddzero2c/tmux-easymotion.git ~/.tmux-easymotion`
 
 Put this at the bottom of ~/.tmux.conf
 
 ```
-set -g @plugin 'tmux-plugins/tpm'
-set -g @plugin 'ddzero2c/tmux-easymotion'
-run -b '~/.tmux/plugins/tpm/tpm'
+bind s run-shell "tmux neww ~/.tmux-easymotion/easymotion.py"
 ```
 
-Run `prefix` + `I` to install plugins.
-
 ### Key bindings
-`prefix` + `/` -> hit a character -> hit hints (jump to position) -> press `Enter` to copy
+`prefix` + `s` -> hit a character -> hit hints (jump to position) -> press `Enter` to copy
 
 `prefix` + `]` to paste
 
@@ -33,16 +25,12 @@ set-window-option -g mode-keys vi
 bind-key -T copy-mode-vi C-v send-keys -X begin-selection \; send-keys -X rectangle-toggle;
 bind-key -T copy-mode-vi v send-keys -X begin-selection;
 bind-key -T copy-mode-vi V send-keys -X select-line;
-
-...
-run -b '~/.tmux/plugins/tpm/tpm'
 ```
 
 ### Inspire by
-- [tpm](https://github.com/tmux-plugins/tpm)
 - [tmux-yank](https://github.com/tmux-plugins/tmux-yank)
 - [vim-easymotion](https://github.com/easymotion/vim-easymotion)
 
 ### Known issues
-- Render wield when tmux pane contain wide character.
-    - ex. `'哈哈'`.
+- ~~Render wield when tmux pane contain wide character.~~
+    ~~- ex. `'哈哈'`.~~
