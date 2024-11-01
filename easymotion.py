@@ -48,7 +48,7 @@ def tmux_pane_id():
     # We're in a new window, get the pane from the previous window
     previous_pane = pyshell('tmux list-panes -F "#{pane_id}" -t "{last}"').strip()
     if re.match(r'%\d+', previous_pane):
-        return previous_pane
+        return previous_pane.split('\n')[0]
         
     # Fallback to current pane if can't get previous
     return pyshell('tmux display-message -p "#{pane_id}"').strip()
