@@ -34,3 +34,4 @@ bind-key -T copy-mode-vi V send-keys -X select-line;
 ### Known issues
 - ~~Render wield when tmux pane contain wide character.~~
     ~~- ex. `'哈哈'`.~~
+- Broken when tmux window has split panes
