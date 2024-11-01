@@ -16,13 +16,15 @@ def get_string_width(s):
     return width
 
 def pyshell(cmd):
-    # Add logging
-    with open(os.path.expanduser('~/easymotion.log'), 'a') as log:
-        log.write(f"{cmd}\n")
-        result = os.popen(cmd).read()
-        log.write(f"Result: {result}\n")
-        log.write("-" * 40 + "\n")
-    return result
+    debug = os.environ.get('TMUX_EASYMOTION_DEBUG') == 'true'
+    if debug:
+        with open(os.path.expanduser('~/easymotion.log'), 'a') as log:
+            log.write(f"Command: {cmd}\n")
+            result = os.popen(cmd).read()
+            log.write(f"Result: {result}\n")
+            log.write("-" * 40 + "\n")
+            return result
+    return os.popen(cmd).read()
 
 def tmux_pane_id():
     # Get the ID of the pane that launched this script
