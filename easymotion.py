@@ -206,4 +206,5 @@ def main(stdscr):
         tmux_move_cursor(pane_id, final_pos)
     cleanup_window()
 
-curses.wrapper(main)
+if __name__ == '__main__':
+    curses.wrapper(main)

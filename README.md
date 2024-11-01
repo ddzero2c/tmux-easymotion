@@ -27,6 +27,12 @@ bind-key -T copy-mode-vi v send-keys -X begin-selection;
 bind-key -T copy-mode-vi V send-keys -X select-line;
 ```
 
+### Run tests
+
+```bash
+pytest test_easymotion.py -v --cache-clear
+```
+
 ### Inspire by
 - [tmux-yank](https://github.com/tmux-plugins/tmux-yank)
 - [vim-easymotion](https://github.com/easymotion/vim-easymotion)
