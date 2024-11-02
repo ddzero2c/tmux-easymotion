@@ -1,11 +1,24 @@
 #!/usr/bin/env python3
-import curses
 import functools
 import os
 import re
+import sys
+import termios
+import tty
 import unicodedata
 from itertools import islice
 from typing import List, Optional
+
+# ANSI escape sequences
+ESC = '\033'
+CLEAR = f'{ESC}[2J'
+CLEAR_LINE = f'{ESC}[2K'
+HIDE_CURSOR = f'{ESC}[?25l'
+SHOW_CURSOR = f'{ESC}[?25h'
+RESET = f'{ESC}[0m'
+RED_FG = f'{ESC}[31m'
+GREEN_FG = f'{ESC}[32m'
+DIM = f'{ESC}[2m'
 
 # Configuration from environment
 KEYS = os.environ.get('TMUX_EASYMOTION_KEYS', 'asdfghjkl;')
@@ -129,14 +142,41 @@ def cleanup_window():
     if current_window != previous_window:
         pyshell('tmux kill-window')
 
+def get_terminal_size():
+    """Get terminal size from tmux"""
+    output = pyshell('tmux display-message -p "#{client_width},#{client_height}"')
+    width, height = map(int, output.strip().split(','))
+    return width, height - 1  # Subtract 1 from height
+
+def init_terminal():
+    """Initialize terminal settings"""
+    sys.stdout.write(HIDE_CURSOR)
+    sys.stdout.flush()
+
+def restore_terminal():
+    """Restore terminal settings"""
+    sys.stdout.write(SHOW_CURSOR)
+    sys.stdout.write(RESET)
+    sys.stdout.flush()
+
+def getch():
+    """Get a single character from terminal"""
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    return ch
+
 
 def tmux_capture_pane(pane):
     if pane.scroll_position > 0:
         # When scrolled up, use negative numbers to capture from history
         # -scroll_pos is where we are in history
-        # -(scroll_pos - curses.LINES + 1) captures one screen worth from there
-        end_pos = -(pane.scroll_position - curses.LINES + 1
-                    )  # Calculate separately to avoid string formatting issues
+        # -(scroll_pos - pane.height + 1) captures one screen worth from there
+        end_pos = -(pane.scroll_position - pane.height + 1)
         cmd = f'tmux capture-pane -p -S -{pane.scroll_position} -E {end_pos} -t {pane.pane_id}'
     else:
         # If not scrolled, just capture current view (default behavior)
@@ -174,14 +214,7 @@ RED = 1
 GREEN = 2
 
 
-def init_curses():
-    """Initialize curses settings and colors"""
-    curses.curs_set(False)
-    curses.start_color()
-    curses.use_default_colors()
-    curses.init_pair(RED, curses.COLOR_RED, -1)
-    curses.init_pair(GREEN, curses.COLOR_GREEN, -1)
-
+# Remove the init_curses function as it's no longer needed
 
 def init_panes():
     """Initialize pane information with cached calculations"""
@@ -203,34 +236,25 @@ def init_panes():
     return panes, max_x, padding_cache
 
 
-def draw_pane_content(stdscr, pane, padding_cache):
+def draw_pane_content(pane, padding_cache):
     """Draw the content of a single pane"""
     for y, line in enumerate(pane.lines[:pane.height]):
         visual_width = get_string_width(line)
         if visual_width < pane.width:
             line = line + padding_cache[pane.width - visual_width]
-        try:
-            stdscr.addstr(pane.start_y + y, pane.start_x, line[:pane.width])
-        except curses.error:
-            pass
+        sys.stdout.write(f'{ESC}[{pane.start_y + y};{pane.start_x}H{line[:pane.width]}')
 
 
-def draw_vertical_borders(stdscr, pane, max_x):
+def draw_vertical_borders(pane, max_x):
     """Draw vertical borders for a pane"""
     if pane.start_x + pane.width < max_x:  # Only if not rightmost pane
-        try:
-            for y in range(pane.start_y, pane.start_y + pane.height):
-                stdscr.addstr(y, pane.start_x + pane.width, VERTICAL_BORDER, curses.A_DIM)
-        except curses.error:
-            pass
+        for y in range(pane.start_y, pane.start_y + pane.height):
+            sys.stdout.write(f'{ESC}[{y};{pane.start_x + pane.width}H{DIM}{VERTICAL_BORDER}{RESET}')
 
 
-def draw_horizontal_border(stdscr, pane, y_pos):
+def draw_horizontal_border(pane, y_pos):
     """Draw horizontal border for a pane"""
-    try:
-        stdscr.addstr(y_pos, pane.start_x, HORIZONTAL_BORDER * pane.width, curses.A_DIM)
-    except curses.error:
-        pass
+    sys.stdout.write(f'{ESC}[{y_pos};{pane.start_x}H{DIM}{HORIZONTAL_BORDER * pane.width}{RESET}')
 
 
 def group_panes_by_end_y(panes):
@@ -242,28 +266,32 @@ def group_panes_by_end_y(panes):
     return rows
 
 
-def draw_all_panes(stdscr, panes, max_x, padding_cache):
+def draw_all_panes(panes, max_x, padding_cache, terminal_height):
     """Draw all panes and their borders"""
-    # Pre-calculate row groups
-    rows = group_panes_by_end_y(panes)
-    for pane in panes:
-        # Draw content and borders in single pass
-        draw_pane_content(stdscr, pane, padding_cache)
-        # Vertical borders
+    sorted_panes = sorted(panes, key=lambda p: p.start_y + p.height)
+    
+    for pane in sorted_panes:
+        # 限制繪製的行數
+        visible_height = min(pane.height, terminal_height - pane.start_y)
+        
+        # 繪製內容
+        for y, line in enumerate(pane.lines[:visible_height]):
+            visual_width = get_string_width(line)
+            if visual_width < pane.width:
+                line = line + padding_cache[pane.width - visual_width]
+            sys.stdout.write(f'{ESC}[{pane.start_y + y + 1};{pane.start_x + 1}H{line[:pane.width]}')
+        
+        # 繪製垂直邊框
         if pane.start_x + pane.width < max_x:
-            try:
-                for y in range(pane.start_y, pane.start_y + pane.height):
-                    stdscr.addstr(y, pane.start_x + pane.width, VERTICAL_BORDER, curses.A_DIM)
-            except curses.error:
-                pass
-        # Horizontal borders
-        end_y = pane.start_y + pane.height
-        if end_y in rows:
-            try:
-                stdscr.addstr(end_y, pane.start_x, HORIZONTAL_BORDER * pane.width, curses.A_DIM)
-            except curses.error:
-                pass
-    stdscr.refresh()
+            for y in range(pane.start_y, pane.start_y + visible_height):
+                sys.stdout.write(f'{ESC}[{y + 1};{pane.start_x + pane.width}H{DIM}{VERTICAL_BORDER}{RESET}')
+        
+        # 只為非最底部的 pane 繪製水平邊框
+        end_y = pane.start_y + visible_height
+        if end_y < terminal_height and pane != sorted_panes[-1]:
+            sys.stdout.write(f'{ESC}[{end_y + 1};{pane.start_x + 1}H{DIM}{HORIZONTAL_BORDER * pane.width}{RESET}')
+    
+    sys.stdout.flush()
 
 
 def find_matches(panes, search_ch, hints):
@@ -284,83 +312,84 @@ def find_matches(panes, search_ch, hints):
     return hint_positions
 
 
-def draw_all_hints(stdscr, panes):
+def draw_all_hints(panes, terminal_height):
     """Draw all hints across all panes"""
     for pane in panes:
         for line_num, col, char, hint in pane.positions:
             y = pane.start_y + line_num
             x = pane.start_x + col
-            if (y < pane.start_y + pane.height and
+            if (y < min(pane.start_y + pane.height, terminal_height) and
                     x < pane.start_x + pane.width and
                     x + get_char_width(char) + 1 < pane.start_x + pane.width):
-                try:
-                    stdscr.addstr(y, x, hint[0], curses.color_pair(RED))
-                    char_width = get_char_width(char)
-                    stdscr.addstr(y, x + char_width, hint[1], curses.color_pair(GREEN))
-                except curses.error:
-                    pass
+                sys.stdout.write(f'{ESC}[{y + 1};{x + 1}H{RED_FG}{hint[0]}{RESET}')
+                char_width = get_char_width(char)
+                sys.stdout.write(f'{ESC}[{y + 1};{x + char_width + 1}H{GREEN_FG}{hint[1]}{RESET}')
+    sys.stdout.flush()
 
 
-def main(stdscr):
-    init_curses()
-    panes, max_x, padding_cache = init_panes()
-    hints = generate_hints(KEYS)
+def main():
+    try:
+        init_terminal()
+        terminal_width, terminal_height = get_terminal_size()
+        panes, max_x, padding_cache = init_panes()
+        hints = generate_hints(KEYS)
 
-    # Draw initial pane contents
-    draw_all_panes(stdscr, panes, max_x, padding_cache)
+        def clear_and_draw():
+            sys.stdout.write(CLEAR)
+            draw_all_panes(panes, max_x, padding_cache, terminal_height)
+            sys.stdout.write(f'{ESC}[{terminal_height};1H')
+            sys.stdout.flush()
 
-    # Get search character and find matches
-    search_ch = stdscr.getkey()
-    hint_positions = find_matches(panes, search_ch, hints)
+        clear_and_draw()
 
-    # Draw hints for all matches
-    draw_all_panes(stdscr, panes, max_x, padding_cache)
-    draw_all_hints(stdscr, panes)
-    stdscr.refresh()
+        # Get search character and find matches
+        search_ch = getch()
+        hint_positions = find_matches(panes, search_ch, hints)
 
-    # Handle first character selection
-    ch1 = stdscr.getkey()
-    if ch1 not in KEYS:
-        cleanup_window()
-        exit(0)
+        # Draw hints for all matches
+        clear_and_draw()
+        draw_all_hints(panes, terminal_height)
+        sys.stdout.flush()
 
-    # Redraw panes and show filtered hints
-    draw_all_panes(stdscr, panes, max_x, padding_cache)
-    for pane in panes:
-        for line_num, col, char, hint in pane.positions:
-            if not hint.startswith(ch1):
-                continue
-            y = pane.start_y + line_num
-            x = pane.start_x + col
-            char_width = get_char_width(char)
-            if (y < pane.start_y + pane.height and
-                    x < pane.start_x + pane.width and
-                    x + char_width + 1 < pane.start_x + pane.width):
-                try:
-                    stdscr.addstr(y, x + char_width, hint[1], curses.color_pair(GREEN))
-                except curses.error:
-                    pass
-    stdscr.refresh()
+        # Handle first character selection
+        ch1 = getch()
+        if ch1 not in KEYS:
+            return
 
-    # Handle second character selection
-    ch2 = stdscr.getkey()
-    if ch2 not in KEYS:
-        cleanup_window()
-        exit(0)
+        # Redraw panes and show filtered hints
+        clear_and_draw()
+        for pane in panes:
+            for line_num, col, char, hint in pane.positions:
+                if not hint.startswith(ch1):
+                    continue
+                y = pane.start_y + line_num
+                x = pane.start_x + col
+                char_width = get_char_width(char)
+                if (y < min(pane.start_y + pane.height, terminal_height) and
+                        x < pane.start_x + pane.width and
+                        x + char_width + 1 < pane.start_x + pane.width):
+                    sys.stdout.write(f'{ESC}[{y + 1};{x + char_width + 1}H{GREEN_FG}{hint[1]}{RESET}')
+        sys.stdout.flush()
 
-    # Move cursor to selected position - now using lookup
-    target_hint = ch1 + ch2
-    if target_hint in hint_positions:
-        pane, line_num, col = hint_positions[target_hint]
-        true_col = get_true_position(pane.lines[line_num], col)  # Use lines directly
-        tmux_move_cursor(pane, line_num, true_col)
+        # Handle second character selection
+        ch2 = getch()
+        if ch2 not in KEYS:
+            return
 
-    cleanup_window()
+        # Move cursor to selected position
+        target_hint = ch1 + ch2
+        if target_hint in hint_positions:
+            pane, line_num, col = hint_positions[target_hint]
+            true_col = get_true_position(pane.lines[line_num], col)
+            tmux_move_cursor(pane, line_num, true_col)
 
+    finally:
+        restore_terminal()
 
 if __name__ == '__main__':
     try:
-        curses.wrapper(main)
+        main()
     except KeyboardInterrupt:
+        restore_terminal()
+    finally:
         cleanup_window()
-        exit(0)
