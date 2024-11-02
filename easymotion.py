@@ -5,6 +5,7 @@ import os
 import unicodedata
 
 KEYS='asdfghjkl;'
+stdscr = None
 
 def get_char_width(char):
     """Get visual width of a single character"""
@@ -39,7 +40,12 @@ def pyshell(cmd):
     return os.popen(cmd).read()
 
 def get_visible_panes():
-    return pyshell('tmux list-panes -F "#{pane_id}" -t "{last}"').strip().split('\n')
+    panes =  pyshell('tmux list-panes -F "#{pane_id},#{window_zoomed_flag},#{pane_active}" -t "{last}"').strip().split('\n')
+    panes = [v.split(',') for v in panes]
+    if panes[0][1] == "1":
+        return [v[0] for v in panes if v[2] == "1"]
+    else:
+        return [v[0] for v in panes]
 
 class PaneInfo:
     def __init__(self, pane_id, start_y, height, start_x, width):
@@ -48,14 +54,25 @@ class PaneInfo:
         self.height = height
         self.start_x = start_x
         self.width = width
-        self.content = None
+        self.content = ''
         self.positions = []
+        self.copy_mode = False
+        self.scroll_position = 0
 
 def get_pane_info(pane_id):
     """Get pane position and size information"""
     cmd = f'tmux display-message -p -t {pane_id} "#{{pane_top}} #{{pane_height}} #{{pane_left}} #{{pane_width}}"'
     top, height, left, width = map(int, pyshell(cmd).strip().split())
-    return PaneInfo(pane_id, top, height, left, width)
+    pane = PaneInfo(pane_id, top, height, left, width)
+    copy_mode = pyshell(f'tmux display-message -p -t {pane_id} "#{{pane_in_mode}}"').strip()
+    if copy_mode == "1":
+        pane.copy_mode = True
+    scroll_pos = pyshell(f'tmux display-message -p -t {pane_id} "#{{scroll_position}}"').strip()
+    try:
+        pane.scroll_position =  int(scroll_pos)
+    except:
+        pane.scroll_position =  0
+    return pane
 
 def tmux_pane_id():
     # Get the ID of the pane that launched this script
@@ -67,7 +84,7 @@ def tmux_pane_id():
     previous_pane = pyshell('tmux list-panes -F "#{pane_id}" -t "{last}"').strip()
     if re.match(r'%\d+', previous_pane):
         return previous_pane.split('\n')[0]
-        
+
     # Fallback to current pane if can't get previous
     return pyshell('tmux display-message -p "#{pane_id}"').strip()
 
@@ -78,19 +95,16 @@ def cleanup_window():
     if current_window != previous_window:
         pyshell('tmux kill-window')
 
-def tmux_capture_pane(pane_id):
-    scroll_pos = get_scroll_position(pane_id)
-    
-    if scroll_pos > 0:
+def tmux_capture_pane(pane):
+    if pane.scroll_position > 0:
         # When scrolled up, use negative numbers to capture from history
         # -scroll_pos is where we are in history
         # -(scroll_pos - curses.LINES + 1) captures one screen worth from there
-        end_pos = -(scroll_pos - curses.LINES + 1)  # Calculate separately to avoid string formatting issues
-        cmd = f'tmux capture-pane -p -S -{scroll_pos} -E {end_pos} -t {pane_id}'
+        end_pos = -(pane.scroll_position - curses.LINES + 1)  # Calculate separately to avoid string formatting issues
+        cmd = f'tmux capture-pane -p -S -{pane.scroll_position} -E {end_pos} -t {pane.pane_id}'
     else:
         # If not scrolled, just capture current view (default behavior)
-        cmd = f'tmux capture-pane -p -t {pane_id}'
-    
+        cmd = f'tmux capture-pane -p -t {pane.pane_id}'
     return pyshell(cmd)[:-1]
 
 def fill_pane_content_with_space(pane_content, width):
@@ -102,25 +116,18 @@ def fill_pane_content_with_space(pane_content, width):
         result.append(line + ' ' * padding)
     return '\n'.join(result)
 
-def get_scroll_position(pane_id):
-    # First check if we're in copy-mode
-    copy_mode = pyshell(f'tmux display-message -p -t {pane_id} "#{{pane_in_mode}}"').strip()
-    if copy_mode != "1":
-        return 0
-        
-    # Get scroll position only if in copy-mode
-    scroll_pos = pyshell(f'tmux display-message -p -t {pane_id} "#{{scroll_position}}"').strip()
-    try:
-        return int(scroll_pos)
-    except ValueError:
-        return 0
 
-def tmux_move_cursor(pane_id, position):
-    # First ensure we're in copy mode
-    pyshell(f'tmux copy-mode -t {pane_id}')
-    # Move to top and then navigate to position
-    pyshell(f'tmux send-keys -X -t {pane_id} top-line')
-    pyshell(f'tmux send-keys -X -t {pane_id} -N {position} cursor-right')
+def tmux_move_cursor(pane, line_num, true_col):
+    cmd = f'tmux select-pane -t {pane.pane_id}'
+    if not pane.copy_mode:
+        cmd += f' \\; copy-mode -t {pane.pane_id}'
+    cmd += f' \\; send-keys -X -t {pane.pane_id} top-line'
+    if line_num > 0:
+        cmd += f' \\; send-keys -X -t {pane.pane_id} -N {line_num} cursor-down'
+    cmd += f' \\; send-keys -X -t {pane.pane_id} start-of-line'
+    if true_col > 0:
+        cmd += f' \\; send-keys -X -t {pane.pane_id} -N {true_col} cursor-right'
+    pyshell(cmd)
 
 def generate_hints(keys):
     """Generate two-character hints from key set more efficiently"""
@@ -133,7 +140,7 @@ def main(stdscr):
     panes = []
     for pane_id in get_visible_panes():
         pane = get_pane_info(pane_id)
-        pane.content = tmux_capture_pane(pane_id)
+        pane.content = tmux_capture_pane(pane)
         panes.append(pane)
 
     curses.curs_set(False)
@@ -143,7 +150,6 @@ def main(stdscr):
     curses.init_pair(GREEN, curses.COLOR_GREEN, -1)
 
     hints = generate_hints(KEYS)
-    hints_dict = {hint: i for i, hint in enumerate(hints)}
 
     # Draw all pane contents
     for pane in panes:
@@ -195,7 +201,6 @@ def main(stdscr):
                 stdscr.addstr(pane.start_y + y, pane.start_x, line[:pane.width])
             except curses.error:
                 pass
-        
         for line_num, col, char, hint in pane.positions:
             if not hint.startswith(ch1):
                 continue
@@ -217,13 +222,8 @@ def main(stdscr):
         for line_num, col, char, hint in pane.positions:
             if hint == target_hint:
                 lines = pane.content.splitlines()
-                line_offset = sum(len(line) + 1 for line in lines[:line_num])
                 true_col = get_true_position(lines[line_num], col)
-                final_pos = line_offset + true_col
-                
-                scroll_position = get_scroll_position(pane.pane_id)
-                tmux_move_cursor(pane.pane_id, final_pos)
-                pyshell(f'tmux select-pane -t {pane.pane_id}')
+                tmux_move_cursor(pane, line_num, true_col)
                 break
 
     cleanup_window()
