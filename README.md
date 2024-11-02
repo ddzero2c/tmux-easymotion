@@ -1,6 +1,6 @@
 # TMUX Easymotion
 
-![demo](https://user-images.githubusercontent.com/20437334/109680947-f1bf2680-7bb7-11eb-9990-1deb3d5a5736.gif)
+![demo](https://github.com/user-attachments/assets/0e97e9ee-2a62-43ac-990a-f896ff5211b2)
 
 ### Installation
 
@@ -14,7 +14,7 @@ bind s run-shell "tmux neww ~/.tmux-easymotion/easymotion.py"
 ```
 
 ### Key bindings
-`prefix` + `/` -> hit a character -> hit hints (jump to position) -> press `Enter` to copy
+`prefix` + `s` -> hit a character -> hit hints (jump to position) -> press `ve` and `y` to copy
 
 `prefix` + `]` to paste
 
