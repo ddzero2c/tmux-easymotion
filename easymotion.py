@@ -2,7 +2,6 @@
 import curses
 import re
 import os
-import itertools
 import unicodedata
 
 KEYS='asdfghjkl;'
@@ -38,6 +37,25 @@ def pyshell(cmd):
             log.write("-" * 40 + "\n")
             return result
     return os.popen(cmd).read()
+
+def get_visible_panes():
+    return pyshell('tmux list-panes -F "#{pane_id}" -t "{last}"').strip().split('\n')
+
+class PaneInfo:
+    def __init__(self, pane_id, start_y, height, start_x, width):
+        self.pane_id = pane_id
+        self.start_y = start_y
+        self.height = height
+        self.start_x = start_x
+        self.width = width
+        self.content = None
+        self.positions = []
+
+def get_pane_info(pane_id):
+    """Get pane position and size information"""
+    cmd = f'tmux display-message -p -t {pane_id} "#{{pane_top}} #{{pane_height}} #{{pane_left}} #{{pane_width}}"'
+    top, height, left, width = map(int, pyshell(cmd).strip().split())
+    return PaneInfo(pane_id, top, height, left, width)
 
 def tmux_pane_id():
     # Get the ID of the pane that launched this script
@@ -112,94 +130,102 @@ RED = 1
 GREEN = 2
 
 def main(stdscr):
-    pane_id = tmux_pane_id()
-    scroll_position = get_scroll_position(pane_id)
-    captured_pane = tmux_capture_pane(pane_id)
+    panes = []
+    for pane_id in get_visible_panes():
+        pane = get_pane_info(pane_id)
+        pane.content = tmux_capture_pane(pane_id)
+        panes.append(pane)
 
-    # invisible cursor
     curses.curs_set(False)
-
-    # get screen width
-    _, width = stdscr.getmaxyx()
-
-    # init default colors
     curses.start_color()
     curses.use_default_colors()
     curses.init_pair(RED, curses.COLOR_RED, -1)
     curses.init_pair(GREEN, curses.COLOR_GREEN, -1)
 
-    # keys = 'abcd', hints = a, b, c, d, aa, ab, ac .... dd
     hints = generate_hints(KEYS)
     hints_dict = {hint: i for i, hint in enumerate(hints)}
 
-    # wrap newline to fixed width space
-    fixed_width_pane = fill_pane_content_with_space(captured_pane, width)
-
-    # Split into lines and add each line separately
-    for y, line in enumerate(fixed_width_pane.splitlines()):
-        try:
-            stdscr.addstr(y, 0, line)
-        except curses.error:
-            pass  # Ignore errors from writing to bottom-right corner
+    # Draw all pane contents
+    for pane in panes:
+        fixed_width_content = fill_pane_content_with_space(pane.content, pane.width)
+        for y, line in enumerate(fixed_width_content.splitlines()[:pane.height]):
+            try:
+                stdscr.addstr(pane.start_y + y, pane.start_x, line[:pane.width])
+            except curses.error:
+                pass
     stdscr.refresh()
+
     search_ch = stdscr.getkey()
 
-    # Track positions by line number and column
-    positions = []
-    lines = captured_pane.splitlines()
-    for line_num, line in enumerate(lines):
-        for match in re.finditer(search_ch, line.lower()):
-            visual_col = sum(get_char_width(c) for c in line[:match.start()])
-            positions.append((line_num, visual_col, line[match.start()]))
+    # Find matches in all panes
+    hint_index = 0
+    for pane in panes:
+        lines = pane.content.splitlines()
+        for line_num, line in enumerate(lines):
+            for match in re.finditer(search_ch, line.lower()):
+                if hint_index >= len(hints):
+                    continue
+                visual_col = sum(get_char_width(c) for c in line[:match.start()])
+                pane.positions.append((line_num, visual_col, line[match.start()], hints[hint_index]))
+                hint_index += 1
 
-    # render 1st hints
-    for i, (line_num, col, char) in enumerate(positions):
-        if i >= len(hints):
-            break
-        y = line_num
-        x = col
-        stdscr.addstr(y, x, hints[i][0], curses.color_pair(RED))
-        char_width = get_char_width(char)
-        if x + char_width < width:
-            stdscr.addstr(y, x + char_width, hints[i][1], curses.color_pair(GREEN))
+    # Draw hints
+    for pane in panes:
+        for line_num, col, char, hint in pane.positions:
+            y = pane.start_y + line_num
+            x = pane.start_x + col
+            if y < pane.start_y + pane.height and x < pane.start_x + pane.width:
+                stdscr.addstr(y, x, hint[0], curses.color_pair(RED))
+                char_width = get_char_width(char)
+                if x + char_width < pane.start_x + pane.width:
+                    stdscr.addstr(y, x + char_width, hint[1], curses.color_pair(GREEN))
     stdscr.refresh()
 
+    # Handle hint selection
     ch1 = stdscr.getkey()
-    if  ch1 not in KEYS:
+    if ch1 not in KEYS:
+        cleanup_window()
         exit(0)
 
-    # render 2nd hints
-    for y, line in enumerate(fixed_width_pane.splitlines()):
-        try:
-            stdscr.addstr(y, 0, line)
-        except curses.error:
-            pass
-    for i, (line_num, col, char) in enumerate(positions):
-        if not hints[i].startswith(ch1) or len(hints[i]) < 2:
-            continue
-        y = line_num
-        x = col
-        char_width = get_char_width(char)
-        if x + char_width < width:
-            stdscr.addstr(y, x + char_width, hints[i][1], curses.color_pair(GREEN))
+    # Redraw and show second character hints
+    for pane in panes:
+        fixed_width_content = fill_pane_content_with_space(pane.content, pane.width)
+        for y, line in enumerate(fixed_width_content.splitlines()[:pane.height]):
+            try:
+                stdscr.addstr(pane.start_y + y, pane.start_x, line[:pane.width])
+            except curses.error:
+                pass
+        
+        for line_num, col, char, hint in pane.positions:
+            if not hint.startswith(ch1):
+                continue
+            y = pane.start_y + line_num
+            x = pane.start_x + col
+            char_width = get_char_width(char)
+            if x + char_width < pane.start_x + pane.width:
+                stdscr.addstr(y, x + char_width, hint[1], curses.color_pair(GREEN))
     stdscr.refresh()
 
     ch2 = stdscr.getkey()
     if ch2 not in KEYS:
         cleanup_window()
         exit(0)
-    # Calculate final position based on line and column
-    target_pos = positions[hints_dict[ch1+ch2]]
-    line_offset = sum(len(line) + 1 for line in lines[:target_pos[0]])
-    true_col = get_true_position(lines[target_pos[0]], target_pos[1])
-    final_pos = line_offset + true_col  # Convert visual position to true position
-    
-    # Adjust for scroll position
-    if scroll_position > 0:
-        tmux_move_cursor(pane_id, final_pos)
-    else:
-        # If not scrolled, move to absolute position
-        tmux_move_cursor(pane_id, final_pos)
+
+    # Find target pane and position
+    target_hint = ch1 + ch2
+    for pane in panes:
+        for line_num, col, char, hint in pane.positions:
+            if hint == target_hint:
+                lines = pane.content.splitlines()
+                line_offset = sum(len(line) + 1 for line in lines[:line_num])
+                true_col = get_true_position(lines[line_num], col)
+                final_pos = line_offset + true_col
+                
+                scroll_position = get_scroll_position(pane.pane_id)
+                tmux_move_cursor(pane.pane_id, final_pos)
+                pyshell(f'tmux select-pane -t {pane.pane_id}')
+                break
+
     cleanup_window()
 
 if __name__ == '__main__':

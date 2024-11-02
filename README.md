@@ -42,4 +42,4 @@ pytest test_easymotion.py -v --cache-clear
     ~~- ex. `'哈哈'`.~~
 - ~~Scrolled up panes are not supported~~
 - ~~Broken when tmux window has split panes~~
-- Jump between panes is not supported
+- ~~Jump between panes is not supported~~
