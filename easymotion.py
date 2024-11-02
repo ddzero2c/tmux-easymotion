@@ -180,11 +180,15 @@ def main(stdscr):
         for line_num, col, char, hint in pane.positions:
             y = pane.start_y + line_num
             x = pane.start_x + col
-            if y < pane.start_y + pane.height and x < pane.start_x + pane.width:
-                stdscr.addstr(y, x, hint[0], curses.color_pair(RED))
-                char_width = get_char_width(char)
-                if x + char_width < pane.start_x + pane.width:
+            if (y < pane.start_y + pane.height and 
+                x < pane.start_x + pane.width and 
+                x + get_char_width(char) + 1 < pane.start_x + pane.width):
+                try:
+                    stdscr.addstr(y, x, hint[0], curses.color_pair(RED))
+                    char_width = get_char_width(char)
                     stdscr.addstr(y, x + char_width, hint[1], curses.color_pair(GREEN))
+                except curses.error:
+                    pass
     stdscr.refresh()
 
     # Handle hint selection
@@ -207,8 +211,13 @@ def main(stdscr):
             y = pane.start_y + line_num
             x = pane.start_x + col
             char_width = get_char_width(char)
-            if x + char_width < pane.start_x + pane.width:
-                stdscr.addstr(y, x + char_width, hint[1], curses.color_pair(GREEN))
+            if (y < pane.start_y + pane.height and 
+                x < pane.start_x + pane.width and 
+                x + char_width + 1 < pane.start_x + pane.width):
+                try:
+                    stdscr.addstr(y, x + char_width, hint[1], curses.color_pair(GREEN))
+                except curses.error:
+                    pass
     stdscr.refresh()
 
     ch2 = stdscr.getkey()
