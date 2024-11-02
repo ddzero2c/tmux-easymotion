@@ -4,7 +4,6 @@ from easymotion import (
     get_string_width,
     get_true_position,
     generate_hints,
-    fill_pane_content_with_space,
 )
 
 def test_get_char_width():
@@ -33,20 +32,6 @@ def test_generate_hints():
     expected = ['aa', 'ab', 'ba', 'bb']
     assert hints == expected
 
-def test_fill_pane_content_with_space():
-    # Test basic padding
-    assert fill_pane_content_with_space('abc', 5) == 'abc  '
-    
-    # Test multiple lines
-    input_text = 'abc\ndef'
-    expected = 'abc  \ndef  '
-    assert fill_pane_content_with_space(input_text, 5) == expected
-    
-    # Test with wide characters
-    assert fill_pane_content_with_space('あい', 6) == 'あい  '
-    
-    # Test when content is wider than specified width
-    assert fill_pane_content_with_space('abcdef', 3) == 'abcdef'
 
 def test_generate_hints_with_full_keys():
     # Test with actual KEYS constant
