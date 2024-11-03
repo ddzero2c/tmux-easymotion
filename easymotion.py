@@ -9,7 +9,6 @@ import termios
 import time
 import tty
 import unicodedata
-from itertools import islice
 from typing import List, Optional
 
 # ANSI escape sequences
@@ -27,6 +26,7 @@ VERTICAL_BORDER = os.environ.get('TMUX_EASYMOTION_VERTICAL_BORDER', '│')
 HORIZONTAL_BORDER = os.environ.get('TMUX_EASYMOTION_HORIZONTAL_BORDER', '─')
 HINT1_FG = os.environ.get('TMUX_EASYMOTION_HINT1_FG', f'{ESC}[1;31m')
 HINT2_FG = os.environ.get('TMUX_EASYMOTION_HINT2_FG', f'{ESC}[1;32m')
+
 
 def perf_timer(func_name=None):
     """Performance timing decorator that only logs when TMUX_EASYMOTION_PERF is true"""
@@ -76,11 +76,6 @@ def get_string_width(s: str) -> int:
     return sum(map(get_char_width, s))
 
 
-def get_visual_col(line: str, pos: int) -> int:
-    """More efficient visual column calculation"""
-    return sum(map(get_char_width, islice(line, 0, pos)))
-
-
 def get_true_position(line, target_col):
     """Calculate true position accounting for wide characters"""
     visual_pos = 0
@@ -92,15 +87,14 @@ def get_true_position(line, target_col):
     return true_pos
 
 
-def pyshell(cmd: str) -> str:
+def sh(cmd: list) -> str:
     """Execute shell command with optional logging"""
     debug_mode = os.environ.get('TMUX_EASYMOTION_DEBUG') == 'true'
 
     try:
-        # Use subprocess.run with text=True to get string output directly
         result = subprocess.run(
             cmd,
-            shell=True,
+            shell=False,
             text=True,
             capture_output=True,
             check=True
@@ -124,8 +118,8 @@ def get_initial_tmux_info():
         '#{pane_top},#{pane_height},#{pane_left},#{pane_width},' + \
         '#{pane_in_mode},#{scroll_position}'
 
-    cmd = f'tmux list-panes -F "{format_str}" -t "{{last}}"'
-    output = pyshell(cmd).strip()
+    cmd = ['tmux', 'list-panes', '-F', format_str, '-t', '{last}']
+    output = sh(cmd).strip()
 
     panes_info = []
     for line in output.split('\n'):
@@ -184,19 +178,19 @@ def tmux_pane_id():
         return '%0'
 
     # We're in a new window, get the pane from the previous window
-    previous_pane = pyshell(
-        'tmux list-panes -F "#{pane_id}" -t "{last}"').strip()
+    previous_pane = sh(
+        ['tmux', 'list-panes', '-F', '#{pane_id}', '-t', '{last}']).strip()
     if re.match(r'%\d+', previous_pane):
         return previous_pane.split('\n')[0]
 
     # Fallback to current pane if can't get previous
-    return pyshell('tmux display-message -p "#{pane_id}"').strip()
+    return sh(['tmux', 'display-message', '-p', '#{pane_id}']).strip()
 
 
 def get_terminal_size():
     """Get terminal size from tmux"""
-    output = pyshell(
-        'tmux display-message -p "#{client_width},#{client_height}"')
+    output = sh(
+        ['tmux', 'display-message', '-p', '#{client_width},#{client_height}'])
     width, height = map(int, output.strip().split(','))
     return width, height - 1  # Subtract 1 from height
 
@@ -238,29 +232,39 @@ def tmux_capture_pane(pane):
     if not pane.height or not pane.width:
         return []
 
+    cmd = ['tmux', 'capture-pane', '-p', '-t', pane.pane_id]
     if pane.scroll_position > 0:
         end_pos = -(pane.scroll_position - pane.height + 1)
-        cmd = f'tmux capture-pane -p -S -{
-            pane.scroll_position} -E {end_pos} -t {pane.pane_id}'
-    else:
-        cmd = f'tmux capture-pane -p -t {pane.pane_id}'
+        cmd.extend(['-S', str(-pane.scroll_position), '-E', str(end_pos)])
 
     # Directly split and limit lines
-    return pyshell(cmd)[:-1].split('\n')[:pane.height]
+    return sh(cmd)[:-1].split('\n')[:pane.height]
 
 
 def tmux_move_cursor(pane, line_num, true_col):
-    cmd = f'tmux select-pane -t {pane.pane_id}'
+    # Execute commands sequentially
+    cmds = [
+        ['tmux', 'select-pane', '-t', pane.pane_id]
+    ]
+
     if not pane.copy_mode:
-        cmd += f' \\; copy-mode -t {pane.pane_id}'
-    cmd += f' \\; send-keys -X -t {pane.pane_id} top-line'
+        cmds.append(['tmux', 'copy-mode', '-t', pane.pane_id])
+
+    cmds.append(['tmux', 'send-keys', '-X', '-t', pane.pane_id, 'top-line'])
+
     if line_num > 0:
-        cmd += f' \\; send-keys -X -t {pane.pane_id} -N {line_num} cursor-down'
-    cmd += f' \\; send-keys -X -t {pane.pane_id} start-of-line'
+        cmds.append(['tmux', 'send-keys', '-X', '-t', pane.pane_id,
+                    '-N', str(line_num), 'cursor-down'])
+
+    cmds.append(['tmux', 'send-keys', '-X', '-t',
+                pane.pane_id, 'start-of-line'])
+
     if true_col > 0:
-        cmd += f' \\; send-keys -X -t {
-            pane.pane_id} -N {true_col} cursor-right'
-    pyshell(cmd)
+        cmds.append(['tmux', 'send-keys', '-X', '-t', pane.pane_id,
+                    '-N', str(true_col), 'cursor-right'])
+
+    for cmd in cmds:
+        sh(cmd)
 
 
 def generate_hints(keys: str, needed_count: Optional[int] = None) -> List[str]:
