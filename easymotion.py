@@ -3,6 +3,7 @@ import functools
 import logging
 import os
 import re
+import subprocess
 import sys
 import termios
 import time
@@ -99,13 +100,22 @@ def pyshell(cmd: str) -> str:
     debug_mode = os.environ.get('TMUX_EASYMOTION_DEBUG') == 'true'
 
     try:
-        result = os.popen(cmd).read()
+        # Use subprocess.run with text=True to get string output directly
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            text=True,
+            capture_output=True,
+            check=True
+        ).stdout
+
         if debug_mode:
             logging.debug(f"Command: {cmd}")
             logging.debug(f"Result: {result}")
             logging.debug("-" * 40)
+
         return result
-    except Exception as e:
+    except subprocess.CalledProcessError as e:
         if debug_mode:
             logging.error(f"Error executing {cmd}: {str(e)}")
         raise
@@ -184,15 +194,6 @@ def tmux_pane_id():
 
     # Fallback to current pane if can't get previous
     return pyshell('tmux display-message -p "#{pane_id}"').strip()
-
-
-def cleanup_window():
-    """Close the current window if we opened in a new one"""
-    current_window = pyshell('tmux display-message -p "#{window_id}"').strip()
-    previous_window = pyshell(
-        'tmux display-message -p "#{window_id}" -t "{last}"').strip()
-    if current_window != previous_window:
-        pyshell('tmux kill-window')
 
 
 def get_terminal_size():
@@ -473,5 +474,3 @@ if __name__ == '__main__':
     except Exception as e:
         logging.error(f"Error occurred: {str(e)}", exc_info=True)
         restore_terminal()
-    finally:
-        cleanup_window()
