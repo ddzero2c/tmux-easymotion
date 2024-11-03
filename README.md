@@ -1,6 +1,6 @@
 # TMUX Easymotion
 
-![demo](https://github.com/user-attachments/assets/1f18eede-d93a-4406-958e-484c16360323)
+![demo](https://github.com/user-attachments/assets/19f621c0-9fef-4137-b4f6-03249dae8d31)
 
 ### Installation
 
