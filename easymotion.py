@@ -216,6 +216,12 @@ def restore_terminal():
     sys.stdout.flush()
 
 
+def to_terminal_coords(y: int, x: int) -> tuple[int, int]:
+    """
+    Convert 0-based coordinate system to terminal's 1-based coordinate system
+    """
+    return y + 1, x + 1
+
 def getch():
     """Get a single character from terminal"""
     fd = sys.stdin.fileno()
@@ -349,20 +355,20 @@ def draw_all_panes(panes, max_x, padding_cache, terminal_height):
                 if padding_size not in padding_cache:
                     padding_cache[padding_size] = ' ' * padding_size
                 line = line + padding_cache[padding_size]
-            sys.stdout.write(
-                f'{ESC}[{pane.start_y + y + 1};{pane.start_x + 1}H{line[:pane.width]}')
+            term_y, term_x = to_terminal_coords(pane.start_y + y, pane.start_x)
+            sys.stdout.write(f'{ESC}[{term_y};{term_x}H{line[:pane.width]}')
 
         # draw vertical borders
         if pane.start_x + pane.width < max_x:
             for y in range(pane.start_y, pane.start_y + visible_height):
-                sys.stdout.write(
-                    f'{ESC}[{y + 1};{pane.start_x + pane.width}H{DIM}{VERTICAL_BORDER}{RESET}')
+                term_y, term_x = to_terminal_coords(y, pane.start_x + pane.width)
+                sys.stdout.write(f'{ESC}[{term_y};{term_x}H{DIM}{VERTICAL_BORDER}{RESET}')
 
         # draw horizontal borders for non-last pane
         end_y = pane.start_y + visible_height
         if end_y < terminal_height and pane != sorted_panes[-1]:
-            sys.stdout.write(f'{ESC}[{
-                             end_y + 1};{pane.start_x + 1}H{DIM}{HORIZONTAL_BORDER * pane.width}{RESET}')
+            term_y, term_x = to_terminal_coords(end_y, pane.start_x)
+            sys.stdout.write(f'{ESC}[{term_y};{term_x}H{DIM}{HORIZONTAL_BORDER * pane.width}{RESET}')
 
     sys.stdout.flush()
 
@@ -396,12 +402,12 @@ def draw_all_hints(panes, terminal_height):
             y = pane.start_y + line_num
             x = pane.start_x + col
             if (y < min(pane.start_y + pane.height, terminal_height) and x + get_char_width(char) <= pane.start_x + pane.width):
-                sys.stdout.write(
-                    f'{ESC}[{y + 1};{x + 1}H{RED_FG}{hint[0]}{RESET}')
+                term_y, term_x = to_terminal_coords(y, x)
+                sys.stdout.write(f'{ESC}[{term_y};{term_x}H{RED_FG}{hint[0]}{RESET}')
                 char_width = get_char_width(char)
                 if x + char_width < pane.start_x + pane.width:
-                    sys.stdout.write(
-                        f'{ESC}[{y + 1};{x + char_width + 1}H{GREEN_FG}{hint[1]}{RESET}')
+                    term_y, term_x = to_terminal_coords(y, x + char_width)
+                    sys.stdout.write(f'{ESC}[{term_y};{term_x}H{GREEN_FG}{hint[1]}{RESET}')
     sys.stdout.flush()
 
 
