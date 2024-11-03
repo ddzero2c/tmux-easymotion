@@ -1,13 +1,53 @@
 #!/usr/bin/env python3
 import functools
+import logging
 import os
 import re
 import sys
 import termios
+import time
 import tty
 import unicodedata
 from itertools import islice
 from typing import List, Optional
+
+
+def perf_timer(func_name=None):
+    """Performance timing decorator that only logs when TMUX_EASYMOTION_PERF is true"""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            if os.environ.get('TMUX_EASYMOTION_PERF') != 'true':
+                return func(*args, **kwargs)
+
+            name = func_name or func.__name__
+            start_time = time.perf_counter()
+            result = func(*args, **kwargs)
+            end_time = time.perf_counter()
+
+            logging.info(f"{name} took: {end_time - start_time:.3f} seconds")
+            return result
+        return wrapper
+    return decorator
+
+
+def setup_logging():
+    """Initialize logging configuration based on environment variables"""
+    debug_mode = os.environ.get('TMUX_EASYMOTION_DEBUG') == 'true'
+    perf_mode = os.environ.get('TMUX_EASYMOTION_PERF') == 'true'
+
+    if not (debug_mode or perf_mode):
+        logging.getLogger().disabled = True
+        return
+
+    log_file = os.path.expanduser(
+        '~/easymotion.log' if debug_mode else '~/easymotion_performance.log')
+    logging.basicConfig(
+        filename=log_file,
+        level=logging.DEBUG,
+        format='%(asctime)s - %(levelname)s - %(message)s'
+    )
+
 
 # ANSI escape sequences
 ESC = '\033'
@@ -22,8 +62,6 @@ DIM = f'{ESC}[2m'
 
 # Configuration from environment
 KEYS = os.environ.get('TMUX_EASYMOTION_KEYS', 'asdfghjkl;')
-HINT_COLOR_1 = int(os.environ.get('TMUX_EASYMOTION_COLOR1', '1'))  # RED
-HINT_COLOR_2 = int(os.environ.get('TMUX_EASYMOTION_COLOR2', '2'))  # GREEN
 VERTICAL_BORDER = os.environ.get('TMUX_EASYMOTION_VERTICAL_BORDER', '│')
 HORIZONTAL_BORDER = os.environ.get('TMUX_EASYMOTION_HORIZONTAL_BORDER', '─')
 
@@ -57,35 +95,68 @@ def get_true_position(line, target_col):
 
 
 def pyshell(cmd: str) -> str:
-    """Execute shell command with error handling"""
-    debug = os.environ.get('TMUX_EASYMOTION_DEBUG') == 'true'
+    """Execute shell command with optional logging"""
+    debug_mode = os.environ.get('TMUX_EASYMOTION_DEBUG') == 'true'
+
     try:
         result = os.popen(cmd).read()
-        if debug:
-            with open(os.path.expanduser('~/easymotion.log'), 'a') as log:
-                log.write(f"Command: {cmd}\n")
-                log.write(f"Result: {result}\n")
-                log.write("-" * 40 + "\n")
+        if debug_mode:
+            logging.debug(f"Command: {cmd}")
+            logging.debug(f"Result: {result}")
+            logging.debug("-" * 40)
         return result
     except Exception as e:
-        if debug:
-            with open(os.path.expanduser('~/easymotion.log'), 'a') as log:
-                log.write(f"Error executing {cmd}: {str(e)}\n")
+        if debug_mode:
+            logging.error(f"Error executing {cmd}: {str(e)}")
         raise
 
 
-def get_visible_panes():
-    panes = pyshell(
-        'tmux list-panes -F "#{pane_id},#{window_zoomed_flag},#{pane_active}" -t "{last}"'
-    ).strip().split('\n')
-    panes = [v.split(',') for v in panes]
-    if panes[0][1] == "1":
-        return [v[0] for v in panes if v[2] == "1"]
-    else:
-        return [v[0] for v in panes]
+def get_initial_tmux_info():
+    """Get all needed tmux info in one optimized call"""
+    format_str = '#{pane_id},#{window_zoomed_flag},#{pane_active},' + \
+        '#{pane_top},#{pane_height},#{pane_left},#{pane_width},' + \
+        '#{pane_in_mode},#{scroll_position}'
+
+    cmd = f'tmux list-panes -F "{format_str}" -t "{{last}}"'
+    output = pyshell(cmd).strip()
+
+    panes_info = []
+    for line in output.split('\n'):
+        if not line:
+            continue
+
+        fields = line.split(',')
+        if len(fields) != 9:
+            continue
+
+        # Use destructuring assignment for better readability and performance
+        (pane_id, zoomed, active, top, height,
+         left, width, in_mode, scroll_pos) = fields
+
+        # Only show all panes in non-zoomed state, or only active pane in zoomed state
+        if zoomed == "1" and active != "1":
+            continue
+
+        pane = PaneInfo(
+            pane_id=pane_id,
+            start_y=int(top),
+            height=int(height),
+            start_x=int(left),
+            width=int(width)
+        )
+
+        # Optimize flag setting
+        pane.copy_mode = (in_mode == "1")
+        pane.scroll_position = int(scroll_pos or 0)
+
+        panes_info.append(pane)
+
+    return panes_info
 
 
 class PaneInfo:
+    __slots__ = ('pane_id', 'start_y', 'height', 'start_x', 'width',
+                 'lines', 'positions', 'copy_mode', 'scroll_position')
 
     def __init__(self, pane_id, start_y, height, start_x, width):
         self.pane_id = pane_id
@@ -93,29 +164,10 @@ class PaneInfo:
         self.height = height
         self.start_x = start_x
         self.width = width
-        self.lines = []  # Store split lines instead of content
+        self.lines = []
         self.positions = []
         self.copy_mode = False
         self.scroll_position = 0
-
-
-def get_pane_info(pane_id):
-    """Get pane position and size information"""
-    cmd = f'tmux display-message -p -t {pane_id} "#{{pane_top}} #{{pane_height}} #{{pane_left}} #{{pane_width}}"'
-    top, height, left, width = map(int, pyshell(cmd).strip().split())
-    pane = PaneInfo(pane_id, top, height, left, width)
-    copy_mode = pyshell(
-        f'tmux display-message -p -t {pane_id} "#{{pane_in_mode}}"').strip()
-    if copy_mode == "1":
-        pane.copy_mode = True
-    scroll_pos = pyshell(
-        f'tmux display-message -p -t {pane_id} "#{{scroll_position}}"').strip(
-        )
-    try:
-        pane.scroll_position = int(scroll_pos)
-    except ValueError:
-        pane.scroll_position = 0
-    return pane
 
 
 def tmux_pane_id():
@@ -142,22 +194,27 @@ def cleanup_window():
     if current_window != previous_window:
         pyshell('tmux kill-window')
 
+
 def get_terminal_size():
     """Get terminal size from tmux"""
-    output = pyshell('tmux display-message -p "#{client_width},#{client_height}"')
+    output = pyshell(
+        'tmux display-message -p "#{client_width},#{client_height}"')
     width, height = map(int, output.strip().split(','))
     return width, height - 1  # Subtract 1 from height
+
 
 def init_terminal():
     """Initialize terminal settings"""
     sys.stdout.write(HIDE_CURSOR)
     sys.stdout.flush()
 
+
 def restore_terminal():
     """Restore terminal settings"""
     sys.stdout.write(SHOW_CURSOR)
     sys.stdout.write(RESET)
     sys.stdout.flush()
+
 
 def getch():
     """Get a single character from terminal"""
@@ -172,16 +229,19 @@ def getch():
 
 
 def tmux_capture_pane(pane):
+    """Optimized pane content capture"""
+    if not pane.height or not pane.width:
+        return []
+
     if pane.scroll_position > 0:
-        # When scrolled up, use negative numbers to capture from history
-        # -scroll_pos is where we are in history
-        # -(scroll_pos - pane.height + 1) captures one screen worth from there
         end_pos = -(pane.scroll_position - pane.height + 1)
-        cmd = f'tmux capture-pane -p -S -{pane.scroll_position} -E {end_pos} -t {pane.pane_id}'
+        cmd = f'tmux capture-pane -p -S -{
+            pane.scroll_position} -E {end_pos} -t {pane.pane_id}'
     else:
-        # If not scrolled, just capture current view (default behavior)
         cmd = f'tmux capture-pane -p -t {pane.pane_id}'
-    return pyshell(cmd)[:-1].splitlines()  # Split immediately
+
+    # Directly split and limit lines
+    return pyshell(cmd)[:-1].split('\n')[:pane.height]
 
 
 def tmux_move_cursor(pane, line_num, true_col):
@@ -193,7 +253,8 @@ def tmux_move_cursor(pane, line_num, true_col):
         cmd += f' \\; send-keys -X -t {pane.pane_id} -N {line_num} cursor-down'
     cmd += f' \\; send-keys -X -t {pane.pane_id} start-of-line'
     if true_col > 0:
-        cmd += f' \\; send-keys -X -t {pane.pane_id} -N {true_col} cursor-right'
+        cmd += f' \\; send-keys -X -t {
+            pane.pane_id} -N {true_col} cursor-right'
     pyshell(cmd)
 
 
@@ -216,23 +277,27 @@ GREEN = 2
 
 # Remove the init_curses function as it's no longer needed
 
+@perf_timer()
 def init_panes():
-    """Initialize pane information with cached calculations"""
+    """Initialize pane information with optimized info gathering"""
     panes = []
     max_x = 0
-    padding_cache = {}  # Cache for padding strings
-    for pane_id in get_visible_panes():
-        pane = get_pane_info(pane_id)
-        pane.lines = tmux_capture_pane(pane)
-        max_x = max(max_x, pane.start_x + pane.width)
-        # Pre-calculate padding strings
-        for line in pane.lines:
-            visual_width = get_string_width(line)
-            if visual_width < pane.width:
-                padding_len = pane.width - visual_width
-                if padding_len not in padding_cache:
-                    padding_cache[padding_len] = ' ' * padding_len
-        panes.append(pane)
+    padding_cache = {}
+
+    # Batch get all pane info
+    panes_info = get_initial_tmux_info()
+
+    # Initialize empty padding cache - will be populated as needed
+    padding_cache = {}
+
+    # Optimize pane processing with list comprehension
+    for pane in panes_info:
+        # Only capture pane content when really needed
+        if pane.height > 0 and pane.width > 0:
+            pane.lines = tmux_capture_pane(pane)
+            max_x = max(max_x, pane.start_x + pane.width)
+            panes.append(pane)
+
     return panes, max_x, padding_cache
 
 
@@ -242,19 +307,22 @@ def draw_pane_content(pane, padding_cache):
         visual_width = get_string_width(line)
         if visual_width < pane.width:
             line = line + padding_cache[pane.width - visual_width]
-        sys.stdout.write(f'{ESC}[{pane.start_y + y};{pane.start_x}H{line[:pane.width]}')
+        sys.stdout.write(
+            f'{ESC}[{pane.start_y + y};{pane.start_x}H{line[:pane.width]}')
 
 
 def draw_vertical_borders(pane, max_x):
     """Draw vertical borders for a pane"""
     if pane.start_x + pane.width < max_x:  # Only if not rightmost pane
         for y in range(pane.start_y, pane.start_y + pane.height):
-            sys.stdout.write(f'{ESC}[{y};{pane.start_x + pane.width}H{DIM}{VERTICAL_BORDER}{RESET}')
+            sys.stdout.write(
+                f'{ESC}[{y};{pane.start_x + pane.width}H{DIM}{VERTICAL_BORDER}{RESET}')
 
 
 def draw_horizontal_border(pane, y_pos):
     """Draw horizontal border for a pane"""
-    sys.stdout.write(f'{ESC}[{y_pos};{pane.start_x}H{DIM}{HORIZONTAL_BORDER * pane.width}{RESET}')
+    sys.stdout.write(f'{ESC}[{y_pos};{pane.start_x}H{DIM}{
+                     HORIZONTAL_BORDER * pane.width}{RESET}')
 
 
 def group_panes_by_end_y(panes):
@@ -266,34 +334,40 @@ def group_panes_by_end_y(panes):
     return rows
 
 
+@perf_timer()
 def draw_all_panes(panes, max_x, padding_cache, terminal_height):
     """Draw all panes and their borders"""
     sorted_panes = sorted(panes, key=lambda p: p.start_y + p.height)
-    
+
     for pane in sorted_panes:
-        # 限制繪製的行數
         visible_height = min(pane.height, terminal_height - pane.start_y)
-        
-        # 繪製內容
+
         for y, line in enumerate(pane.lines[:visible_height]):
             visual_width = get_string_width(line)
             if visual_width < pane.width:
-                line = line + padding_cache[pane.width - visual_width]
-            sys.stdout.write(f'{ESC}[{pane.start_y + y + 1};{pane.start_x + 1}H{line[:pane.width]}')
-        
-        # 繪製垂直邊框
+                padding_size = pane.width - visual_width
+                if padding_size not in padding_cache:
+                    padding_cache[padding_size] = ' ' * padding_size
+                line = line + padding_cache[padding_size]
+            sys.stdout.write(
+                f'{ESC}[{pane.start_y + y + 1};{pane.start_x + 1}H{line[:pane.width]}')
+
+        # draw vertical borders
         if pane.start_x + pane.width < max_x:
             for y in range(pane.start_y, pane.start_y + visible_height):
-                sys.stdout.write(f'{ESC}[{y + 1};{pane.start_x + pane.width}H{DIM}{VERTICAL_BORDER}{RESET}')
-        
-        # 只為非最底部的 pane 繪製水平邊框
+                sys.stdout.write(
+                    f'{ESC}[{y + 1};{pane.start_x + pane.width}H{DIM}{VERTICAL_BORDER}{RESET}')
+
+        # draw horizontal borders for non-last pane
         end_y = pane.start_y + visible_height
         if end_y < terminal_height and pane != sorted_panes[-1]:
-            sys.stdout.write(f'{ESC}[{end_y + 1};{pane.start_x + 1}H{DIM}{HORIZONTAL_BORDER * pane.width}{RESET}')
-    
+            sys.stdout.write(f'{ESC}[{
+                             end_y + 1};{pane.start_x + 1}H{DIM}{HORIZONTAL_BORDER * pane.width}{RESET}')
+
     sys.stdout.flush()
 
 
+@perf_timer("Finding matches")
 def find_matches(panes, search_ch, hints):
     """Find all matches for the search character and assign hints"""
     hint_index = 0
@@ -303,15 +377,18 @@ def find_matches(panes, search_ch, hints):
             for match in re.finditer(search_ch, line.lower()):
                 if hint_index >= len(hints):
                     continue
-                visual_col = sum(get_char_width(c) for c in line[:match.start()])
+                visual_col = sum(get_char_width(c)
+                                 for c in line[:match.start()])
                 position = (pane, line_num, visual_col)
                 hint = hints[hint_index]
-                pane.positions.append((line_num, visual_col, line[match.start()], hint))
+                pane.positions.append(
+                    (line_num, visual_col, line[match.start()], hint))
                 hint_positions[hint] = position  # Store for quick lookup
                 hint_index += 1
     return hint_positions
 
 
+@perf_timer("Drawing hints")
 def draw_all_hints(panes, terminal_height):
     """Draw all hints across all panes"""
     for pane in panes:
@@ -321,33 +398,33 @@ def draw_all_hints(panes, terminal_height):
             if (y < min(pane.start_y + pane.height, terminal_height) and
                     x < pane.start_x + pane.width and
                     x + get_char_width(char) + 1 < pane.start_x + pane.width):
-                sys.stdout.write(f'{ESC}[{y + 1};{x + 1}H{RED_FG}{hint[0]}{RESET}')
+                sys.stdout.write(
+                    f'{ESC}[{y + 1};{x + 1}H{RED_FG}{hint[0]}{RESET}')
                 char_width = get_char_width(char)
-                sys.stdout.write(f'{ESC}[{y + 1};{x + char_width + 1}H{GREEN_FG}{hint[1]}{RESET}')
+                sys.stdout.write(
+                    f'{ESC}[{y + 1};{x + char_width + 1}H{GREEN_FG}{hint[1]}{RESET}')
     sys.stdout.flush()
 
 
+@perf_timer("Total execution")
 def main():
     try:
+        setup_logging()
         init_terminal()
         terminal_width, terminal_height = get_terminal_size()
         panes, max_x, padding_cache = init_panes()
+
+        # Only clear screen when really needed
+        sys.stdout.write(CLEAR)
+        draw_all_panes(panes, max_x, padding_cache, terminal_height)
+        sys.stdout.write(f'{ESC}[{terminal_height};1H')
+        sys.stdout.flush()
+
         hints = generate_hints(KEYS)
-
-        def clear_and_draw():
-            sys.stdout.write(CLEAR)
-            draw_all_panes(panes, max_x, padding_cache, terminal_height)
-            sys.stdout.write(f'{ESC}[{terminal_height};1H')
-            sys.stdout.flush()
-
-        clear_and_draw()
-
-        # Get search character and find matches
         search_ch = getch()
         hint_positions = find_matches(panes, search_ch, hints)
 
-        # Draw hints for all matches
-        clear_and_draw()
+        # Just draw hints without clearing screen
         draw_all_hints(panes, terminal_height)
         sys.stdout.flush()
 
@@ -356,8 +433,7 @@ def main():
         if ch1 not in KEYS:
             return
 
-        # Redraw panes and show filtered hints
-        clear_and_draw()
+        # Only update necessary hints without full redraw
         for pane in panes:
             for line_num, col, char, hint in pane.positions:
                 if not hint.startswith(ch1):
@@ -368,7 +444,8 @@ def main():
                 if (y < min(pane.start_y + pane.height, terminal_height) and
                         x < pane.start_x + pane.width and
                         x + char_width + 1 < pane.start_x + pane.width):
-                    sys.stdout.write(f'{ESC}[{y + 1};{x + char_width + 1}H{GREEN_FG}{hint[1]}{RESET}')
+                    sys.stdout.write(
+                        f'{ESC}[{y + 1};{x + char_width + 1}H{GREEN_FG}{hint[1]}{RESET}')
         sys.stdout.flush()
 
         # Handle second character selection
@@ -386,10 +463,15 @@ def main():
     finally:
         restore_terminal()
 
+
 if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
+        logging.info("Operation cancelled by user")
+        restore_terminal()
+    except Exception as e:
+        logging.error(f"Error occurred: {str(e)}", exc_info=True)
         restore_terminal()
     finally:
         cleanup_window()
