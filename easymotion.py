@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import curses
 import functools
 import logging
 import os
@@ -9,23 +10,159 @@ import termios
 import time
 import tty
 import unicodedata
+from abc import ABC, abstractmethod
 from typing import List, Optional
-
-# ANSI escape sequences
-ESC = '\033'
-CLEAR = f'{ESC}[2J'
-CLEAR_LINE = f'{ESC}[2K'
-HIDE_CURSOR = f'{ESC}[?25l'
-SHOW_CURSOR = f'{ESC}[?25h'
-RESET = f'{ESC}[0m'
-DIM = f'{ESC}[2m'
 
 # Configuration from environment
 KEYS = os.environ.get('TMUX_EASYMOTION_KEYS', 'asdfghjkl;')
 VERTICAL_BORDER = os.environ.get('TMUX_EASYMOTION_VERTICAL_BORDER', '│')
 HORIZONTAL_BORDER = os.environ.get('TMUX_EASYMOTION_HORIZONTAL_BORDER', '─')
-HINT1_FG = os.environ.get('TMUX_EASYMOTION_HINT1_FG', f'{ESC}[1;31m')
-HINT2_FG = os.environ.get('TMUX_EASYMOTION_HINT2_FG', f'{ESC}[1;32m')
+USE_CURSES = os.environ.get(
+    'TMUX_EASYMOTION_USE_CURSES', 'false').lower() == 'true'
+
+
+class Screen(ABC):
+    # Common attributes for both implementations
+    A_NORMAL = 0
+    A_DIM = 1
+    A_HINT1 = 2
+    A_HINT2 = 3
+
+    @abstractmethod
+    def transform_attr(self, attr):
+        """Transform generic attributes to implementation-specific attributes"""
+        pass
+
+    @abstractmethod
+    def init(self):
+        """Initialize the screen"""
+        pass
+
+    @abstractmethod
+    def cleanup(self):
+        """Cleanup the screen"""
+        pass
+
+    @abstractmethod
+    def addstr(self, y: int, x: int, text: str, attr=0):
+        """Add string with attributes"""
+        pass
+
+    @abstractmethod
+    def refresh(self):
+        """Refresh the screen"""
+        pass
+
+    @abstractmethod
+    def clear(self):
+        """Clear the screen"""
+        pass
+
+
+class AnsiSequence(Screen):
+    # ANSI escape sequences
+    ESC = '\033'
+    CLEAR = f'{ESC}[2J'
+    CLEAR_LINE = f'{ESC}[2K'
+    HIDE_CURSOR = f'{ESC}[?25l'
+    SHOW_CURSOR = f'{ESC}[?25h'
+    RESET = f'{ESC}[0m'
+    DIM = f'{ESC}[2m'
+    RED = f'{ESC}[1;31m'
+    GREEN = f'{ESC}[1;32m'
+
+    def init(self):
+        sys.stdout.write(self.HIDE_CURSOR)
+        sys.stdout.flush()
+
+    def cleanup(self):
+        sys.stdout.write(self.SHOW_CURSOR)
+        sys.stdout.write(self.RESET)
+        sys.stdout.flush()
+
+    def transform_attr(self, attr):
+        if attr == self.A_DIM:
+            return self.DIM
+        elif attr == self.A_HINT1:
+            return self.RED
+        elif attr == self.A_HINT2:
+            return self.GREEN
+        return ''
+
+    def addstr(self, y: int, x: int, text: str, attr=0):
+        attr_str = self.transform_attr(attr)
+        if attr_str:
+            sys.stdout.write(
+                f'{self.ESC}[{y+1};{x+1}H{attr_str}{text}{self.RESET}')
+        else:
+            sys.stdout.write(f'{self.ESC}[{y+1};{x+1}H{text}')
+
+    def refresh(self):
+        sys.stdout.flush()
+
+    def clear(self):
+        sys.stdout.write(self.CLEAR)
+
+
+class Curses(Screen):
+    def __init__(self):
+        self.stdscr = None
+
+    def init(self):
+        self.stdscr = curses.initscr()
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_RED, -1)
+        curses.init_pair(2, curses.COLOR_GREEN, -1)
+        curses.noecho()
+        curses.cbreak()
+        self.stdscr.keypad(True)
+
+    def cleanup(self):
+        if not self.stdscr:
+            return
+        curses.nocbreak()
+        self.stdscr.keypad(False)
+        curses.echo()
+        curses.endwin()
+
+    def transform_attr(self, attr):
+        if attr == self.A_DIM:
+            return curses.A_DIM
+        elif attr == self.A_HINT1:
+            return curses.color_pair(1) | curses.A_BOLD
+        elif attr == self.A_HINT2:
+            return curses.color_pair(2) | curses.A_BOLD
+        return curses.A_NORMAL
+
+    def addstr(self, y: int, x: int, text: str, attr=0):
+        try:
+            self.stdscr.addstr(y, x, text, self.transform_attr(attr))
+        except curses.error:
+            pass
+
+    def refresh(self):
+        self.stdscr.refresh()
+
+    def clear(self):
+        self.stdscr.clear()
+
+
+def setup_logging():
+    """Initialize logging configuration based on environment variables"""
+    debug_mode = os.environ.get('TMUX_EASYMOTION_DEBUG') == 'true'
+    perf_mode = os.environ.get('TMUX_EASYMOTION_PERF') == 'true'
+
+    if not (debug_mode or perf_mode):
+        logging.getLogger().disabled = True
+        return
+
+    log_file = os.path.expanduser('~/easymotion.log')
+    logging.basicConfig(
+        filename=log_file,
+        level=logging.DEBUG,
+        format=f'%(asctime)s - %(levelname)s - {"CURSE" if USE_CURSES else "ANSI"} - %(message)s'
+    )
 
 
 def perf_timer(func_name=None):
@@ -45,23 +182,6 @@ def perf_timer(func_name=None):
             return result
         return wrapper
     return decorator
-
-
-def setup_logging():
-    """Initialize logging configuration based on environment variables"""
-    debug_mode = os.environ.get('TMUX_EASYMOTION_DEBUG') == 'true'
-    perf_mode = os.environ.get('TMUX_EASYMOTION_PERF') == 'true'
-
-    if not (debug_mode or perf_mode):
-        logging.getLogger().disabled = True
-        return
-
-    log_file = os.path.expanduser('~/easymotion.log')
-    logging.basicConfig(
-        filename=log_file,
-        level=logging.DEBUG,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
 
 
 @functools.lru_cache(maxsize=1024)
@@ -195,19 +315,6 @@ def get_terminal_size():
     return width, height - 1  # Subtract 1 from height
 
 
-def init_terminal():
-    """Initialize terminal settings"""
-    sys.stdout.write(HIDE_CURSOR)
-    sys.stdout.flush()
-
-
-def restore_terminal():
-    """Restore terminal settings"""
-    sys.stdout.write(SHOW_CURSOR)
-    sys.stdout.write(RESET)
-    sys.stdout.flush()
-
-
 def to_terminal_coords(y: int, x: int) -> tuple[int, int]:
     """
     Convert 0-based coordinate system to terminal's 1-based coordinate system
@@ -280,12 +387,6 @@ def generate_hints(keys: str, needed_count: Optional[int] = None) -> List[str]:
     return hints
 
 
-RED = 1
-GREEN = 2
-
-
-# Remove the init_curses function as it's no longer needed
-
 @perf_timer()
 def init_panes():
     """Initialize pane information with optimized info gathering"""
@@ -310,47 +411,15 @@ def init_panes():
     return panes, max_x, padding_cache
 
 
-def draw_pane_content(pane, padding_cache):
-    """Draw the content of a single pane"""
-    for y, line in enumerate(pane.lines[:pane.height]):
-        visual_width = get_string_width(line)
-        if visual_width < pane.width:
-            line = line + padding_cache[pane.width - visual_width]
-        sys.stdout.write(
-            f'{ESC}[{pane.start_y + y};{pane.start_x}H{line[:pane.width]}')
-
-
-def draw_vertical_borders(pane, max_x):
-    """Draw vertical borders for a pane"""
-    if pane.start_x + pane.width < max_x:  # Only if not rightmost pane
-        for y in range(pane.start_y, pane.start_y + pane.height):
-            sys.stdout.write(
-                f'{ESC}[{y};{pane.start_x + pane.width}H{DIM}{VERTICAL_BORDER}{RESET}')
-
-
-def draw_horizontal_border(pane, y_pos):
-    """Draw horizontal border for a pane"""
-    sys.stdout.write(f'{ESC}[{y_pos};{pane.start_x}H{DIM}{
-                     HORIZONTAL_BORDER * pane.width}{RESET}')
-
-
-def group_panes_by_end_y(panes):
-    """Group panes by their end y position"""
-    rows = {}
-    for pane in panes:
-        end_y = pane.start_y + pane.height
-        rows.setdefault(end_y, []).append(pane)
-    return rows
-
-
 @perf_timer()
-def draw_all_panes(panes, max_x, padding_cache, terminal_height):
+def draw_all_panes(panes, max_x, padding_cache, terminal_height, screen):
     """Draw all panes and their borders"""
     sorted_panes = sorted(panes, key=lambda p: p.start_y + p.height)
 
     for pane in sorted_panes:
         visible_height = min(pane.height, terminal_height - pane.start_y)
 
+        # Draw content
         for y, line in enumerate(pane.lines[:visible_height]):
             visual_width = get_string_width(line)
             if visual_width < pane.width:
@@ -359,24 +428,24 @@ def draw_all_panes(panes, max_x, padding_cache, terminal_height):
                     padding_cache[padding_size] = ' ' * padding_size
                 line = line + padding_cache[padding_size]
             term_y, term_x = to_terminal_coords(pane.start_y + y, pane.start_x)
-            sys.stdout.write(f'{ESC}[{term_y};{term_x}H{line[:pane.width]}')
+            screen.addstr(term_y-1, term_x-1, line[:pane.width])
 
-        # draw vertical borders
+        # Draw vertical borders
         if pane.start_x + pane.width < max_x:
             for y in range(pane.start_y, pane.start_y + visible_height):
                 term_y, term_x = to_terminal_coords(
                     y, pane.start_x + pane.width)
-                sys.stdout.write(f'{ESC}[{term_y};{term_x}H{
-                                 DIM}{VERTICAL_BORDER}{RESET}')
+                screen.addstr(term_y-1, term_x-1,
+                              VERTICAL_BORDER, screen.A_DIM)
 
-        # draw horizontal borders for non-last pane
+        # Draw horizontal borders
         end_y = pane.start_y + visible_height
         if end_y < terminal_height and pane != sorted_panes[-1]:
             term_y, term_x = to_terminal_coords(end_y, pane.start_x)
-            sys.stdout.write(f'{ESC}[{term_y};{term_x}H{DIM}{
-                             HORIZONTAL_BORDER * pane.width}{RESET}')
+            screen.addstr(term_y-1, term_x-1, HORIZONTAL_BORDER *
+                          pane.width, screen.A_DIM)
 
-    sys.stdout.flush()
+    screen.refresh()
 
 
 @perf_timer("Finding matches")
@@ -401,7 +470,7 @@ def find_matches(panes, search_ch, hints):
 
 
 @perf_timer("Drawing hints")
-def draw_all_hints(panes, terminal_height):
+def draw_all_hints(panes, terminal_height, screen):
     """Draw all hints across all panes"""
     for pane in panes:
         for line_num, col, char, hint in pane.positions:
@@ -409,83 +478,70 @@ def draw_all_hints(panes, terminal_height):
             x = pane.start_x + col
             if (y < min(pane.start_y + pane.height, terminal_height) and x + get_char_width(char) <= pane.start_x + pane.width):
                 term_y, term_x = to_terminal_coords(y, x)
-                sys.stdout.write(f'{ESC}[{term_y};{term_x}H{
-                                 HINT1_FG}{hint[0]}{RESET}')
+                screen.addstr(term_y-1, term_x-1, hint[0], screen.A_HINT1)
                 char_width = get_char_width(char)
                 if x + char_width < pane.start_x + pane.width:
                     term_y, term_x = to_terminal_coords(y, x + char_width)
-                    sys.stdout.write(f'{ESC}[{term_y};{term_x}H{
-                                     HINT2_FG}{hint[1]}{RESET}')
+                    screen.addstr(term_y-1, term_x-1, hint[1], screen.A_HINT2)
     sys.stdout.flush()
 
 
 @perf_timer("Total execution")
-def main():
-    try:
-        setup_logging()
-        init_terminal()
-        terminal_width, terminal_height = get_terminal_size()
-        panes, max_x, padding_cache = init_panes()
+def main(screen: Screen):
+    setup_logging()
+    terminal_width, terminal_height = get_terminal_size()
+    panes, max_x, padding_cache = init_panes()
 
-        # Only clear screen when really needed
-        sys.stdout.write(CLEAR)
-        draw_all_panes(panes, max_x, padding_cache, terminal_height)
-        sys.stdout.write(f'{ESC}[{terminal_height};1H')
-        sys.stdout.flush()
+    draw_all_panes(panes, max_x, padding_cache, terminal_height, screen)
+    screen.refresh()
 
-        hints = generate_hints(KEYS)
-        search_ch = getch()
-        hint_positions = find_matches(panes, search_ch, hints)
+    hints = generate_hints(KEYS)
+    search_ch = getch()
+    hint_positions = find_matches(panes, search_ch, hints)
 
-        # Just draw hints without clearing screen
-        draw_all_hints(panes, terminal_height)
-        sys.stdout.flush()
+    draw_all_hints(panes, terminal_height, screen)
+    screen.refresh()
 
-        # Handle first character selection
-        ch1 = getch()
-        if ch1 not in KEYS:
-            return
+    ch1 = getch()
+    if ch1 not in KEYS:
+        return
 
-        # Only update necessary hints without full redraw
-        for pane in panes:
-            for line_num, col, char, hint in pane.positions:
-                if not hint.startswith(ch1):
-                    continue
-                y = pane.start_y + line_num
-                x = pane.start_x + col
-                char_width = get_char_width(char)
-                if (y < min(pane.start_y + pane.height, terminal_height) and x + char_width <= pane.start_x + pane.width):
-                    # Clear first position and show second character
-                    sys.stdout.write(
-                        f'{ESC}[{y + 1};{x + 1}H{HINT2_FG}{hint[1]}{RESET}')
-                    # Restore original character in second position (if there's space)
-                    if x + char_width + 1 < pane.start_x + pane.width:
-                        sys.stdout.write(
-                            f'{ESC}[{y + 1};{x + char_width + 1}H{char}')
-        sys.stdout.flush()
+    # Update hints consistently using screen.addstr
+    for pane in panes:
+        for line_num, col, char, hint in pane.positions:
+            if not hint.startswith(ch1):
+                continue
+            y = pane.start_y + line_num
+            x = pane.start_x + col
+            char_width = get_char_width(char)
+            if (y < min(pane.start_y + pane.height, terminal_height) and
+                    x + char_width <= pane.start_x + pane.width):
+                term_y, term_x = to_terminal_coords(y, x)
+                screen.addstr(term_y-1, term_x-1, hint[1], screen.A_HINT2)
+                if x + char_width + 1 < pane.start_x + pane.width:
+                    screen.addstr(term_y-1, term_x-1+char_width, char)
 
-        # Handle second character selection
-        ch2 = getch()
-        if ch2 not in KEYS:
-            return
+    screen.refresh()
 
-        # Move cursor to selected position
-        target_hint = ch1 + ch2
-        if target_hint in hint_positions:
-            pane, line_num, col = hint_positions[target_hint]
-            true_col = get_true_position(pane.lines[line_num], col)
-            tmux_move_cursor(pane, line_num, true_col)
+    ch2 = getch()
+    if ch2 not in KEYS:
+        return
 
-    finally:
-        restore_terminal()
+    target_hint = ch1 + ch2
+    if target_hint in hint_positions:
+        pane, line_num, col = hint_positions[target_hint]
+        true_col = get_true_position(pane.lines[line_num], col)
+        tmux_move_cursor(pane, line_num, true_col)
 
 
 if __name__ == '__main__':
+    screen: Screen = Curses() if USE_CURSES else AnsiSequence()
+    screen.init()
     try:
-        main()
+        main(screen)
     except KeyboardInterrupt:
         logging.info("Operation cancelled by user")
-        restore_terminal()
     except Exception as e:
         logging.error(f"Error occurred: {str(e)}", exc_info=True)
-        restore_terminal()
+    finally:
+        screen.cleanup()

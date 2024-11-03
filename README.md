@@ -27,9 +27,8 @@ Available environment variables(default values):
 # Keys used for hints
 TMUX_EASYMOTION_KEYS="asdfghjkl;"
 
-# Hint colors
-TMUX_EASYMOTION_HINT1_FG="\033[1;31m"
-TMUX_EASYMOTION_HINT2_FG="\033[1;32m"
+# For old users who need curses instead of ansi escape sequences
+TMUX_EASYMOTION_USE_CURSES="true"
 
 # Border characters
 TMUX_EASYMOTION_VERTICAL_BORDER="│"
