@@ -4,28 +4,45 @@
 
 ### Installation
 
-Clone TPM
 `$ git clone https://github.com/ddzero2c/tmux-easymotion.git ~/.tmux-easymotion`
 
-Put this at the bottom of ~/.tmux.conf
+### Configuration
 
-```
+```bash
+# Basic binding
 bind s run-shell "tmux neww ~/.tmux-easymotion/easymotion.py"
-```
 
-### Key bindings
-`prefix` + `s` -> hit a character -> hit hints (jump to position) -> press `ve` and `y` to copy
+# Or with custom environment variables
+bind s run-shell "tmux neww TMUX_EASYMOTION_KEYS='asdfjkl;' ~/.tmux-easymotion/easymotion.py"
 
-`prefix` + `]` to paste
-
-Configure vim-like movement:
-```
-# .tmux.conf
+# Vim-like binding
 set-window-option -g mode-keys vi
 bind-key -T copy-mode-vi C-v send-keys -X begin-selection \; send-keys -X rectangle-toggle;
 bind-key -T copy-mode-vi v send-keys -X begin-selection;
 bind-key -T copy-mode-vi V send-keys -X select-line;
 ```
+
+Available environment variables(default values):
+```bash
+# Keys used for hints
+TMUX_EASYMOTION_KEYS="asdfghjkl;"
+
+# Border characters
+TMUX_EASYMOTION_VERTICAL_BORDER="│"
+TMUX_EASYMOTION_HORIZONTAL_BORDER="─"
+
+# Debug mode - writes debug info to ~/easymotion.log
+TMUX_EASYMOTION_DEBUG="false"
+
+# Performance logging - writes timing info to ~/easymotion.log
+TMUX_EASYMOTION_PERF="false"
+```
+
+### Usage
+`prefix` + `s` -> hit a character -> hit hints (jump to position) -> press `ve` and `y` to copy
+
+`prefix` + `]` to paste
+
 
 ### Run tests
 
