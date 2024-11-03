@@ -41,8 +41,7 @@ def setup_logging():
         logging.getLogger().disabled = True
         return
 
-    log_file = os.path.expanduser(
-        '~/easymotion.log' if debug_mode else '~/easymotion_performance.log')
+    log_file = os.path.expanduser( '~/easymotion.log')
     logging.basicConfig(
         filename=log_file,
         level=logging.DEBUG,
@@ -396,14 +395,13 @@ def draw_all_hints(panes, terminal_height):
         for line_num, col, char, hint in pane.positions:
             y = pane.start_y + line_num
             x = pane.start_x + col
-            if (y < min(pane.start_y + pane.height, terminal_height) and
-                    x < pane.start_x + pane.width and
-                    x + get_char_width(char) + 1 < pane.start_x + pane.width):
+            if (y < min(pane.start_y + pane.height, terminal_height) and x + get_char_width(char) <= pane.start_x + pane.width):
                 sys.stdout.write(
                     f'{ESC}[{y + 1};{x + 1}H{RED_FG}{hint[0]}{RESET}')
                 char_width = get_char_width(char)
-                sys.stdout.write(
-                    f'{ESC}[{y + 1};{x + char_width + 1}H{GREEN_FG}{hint[1]}{RESET}')
+                if x + char_width < pane.start_x + pane.width:
+                    sys.stdout.write(
+                        f'{ESC}[{y + 1};{x + char_width + 1}H{GREEN_FG}{hint[1]}{RESET}')
     sys.stdout.flush()
 
 
@@ -442,11 +440,12 @@ def main():
                 y = pane.start_y + line_num
                 x = pane.start_x + col
                 char_width = get_char_width(char)
-                if (y < min(pane.start_y + pane.height, terminal_height) and
-                        x < pane.start_x + pane.width and
-                        x + char_width + 1 < pane.start_x + pane.width):
-                    sys.stdout.write(
-                        f'{ESC}[{y + 1};{x + char_width + 1}H{GREEN_FG}{hint[1]}{RESET}')
+                if (y < min(pane.start_y + pane.height, terminal_height) and x + char_width <= pane.start_x + pane.width):
+                    # Clear first position and show second character
+                    sys.stdout.write(f'{ESC}[{y + 1};{x + 1}H{GREEN_FG}{hint[1]}{RESET}')
+                    # Restore original character in second position (if there's space)
+                    if x + char_width + 1 < pane.start_x + pane.width:
+                        sys.stdout.write(f'{ESC}[{y + 1};{x + char_width + 1}H{char}')
         sys.stdout.flush()
 
         # Handle second character selection
