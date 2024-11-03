@@ -27,6 +27,10 @@ Available environment variables(default values):
 # Keys used for hints
 TMUX_EASYMOTION_KEYS="asdfghjkl;"
 
+# Hint colors
+TMUX_EASYMOTION_HINT1_FG="\033[1;31m"
+TMUX_EASYMOTION_HINT2_FG="\033[1;32m"
+
 # Border characters
 TMUX_EASYMOTION_VERTICAL_BORDER="│"
 TMUX_EASYMOTION_HORIZONTAL_BORDER="─"

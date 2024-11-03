@@ -12,6 +12,21 @@ import unicodedata
 from itertools import islice
 from typing import List, Optional
 
+# ANSI escape sequences
+ESC = '\033'
+CLEAR = f'{ESC}[2J'
+CLEAR_LINE = f'{ESC}[2K'
+HIDE_CURSOR = f'{ESC}[?25l'
+SHOW_CURSOR = f'{ESC}[?25h'
+RESET = f'{ESC}[0m'
+DIM = f'{ESC}[2m'
+
+# Configuration from environment
+KEYS = os.environ.get('TMUX_EASYMOTION_KEYS', 'asdfghjkl;')
+VERTICAL_BORDER = os.environ.get('TMUX_EASYMOTION_VERTICAL_BORDER', '│')
+HORIZONTAL_BORDER = os.environ.get('TMUX_EASYMOTION_HORIZONTAL_BORDER', '─')
+HINT1_FG = os.environ.get('TMUX_EASYMOTION_HINT1_FG', f'{ESC}[1;31m')
+HINT2_FG = os.environ.get('TMUX_EASYMOTION_HINT2_FG', f'{ESC}[1;32m')
 
 def perf_timer(func_name=None):
     """Performance timing decorator that only logs when TMUX_EASYMOTION_PERF is true"""
@@ -41,29 +56,12 @@ def setup_logging():
         logging.getLogger().disabled = True
         return
 
-    log_file = os.path.expanduser( '~/easymotion.log')
+    log_file = os.path.expanduser('~/easymotion.log')
     logging.basicConfig(
         filename=log_file,
         level=logging.DEBUG,
         format='%(asctime)s - %(levelname)s - %(message)s'
     )
-
-
-# ANSI escape sequences
-ESC = '\033'
-CLEAR = f'{ESC}[2J'
-CLEAR_LINE = f'{ESC}[2K'
-HIDE_CURSOR = f'{ESC}[?25l'
-SHOW_CURSOR = f'{ESC}[?25h'
-RESET = f'{ESC}[0m'
-RED_FG = f'{ESC}[31m'
-GREEN_FG = f'{ESC}[32m'
-DIM = f'{ESC}[2m'
-
-# Configuration from environment
-KEYS = os.environ.get('TMUX_EASYMOTION_KEYS', 'asdfghjkl;')
-VERTICAL_BORDER = os.environ.get('TMUX_EASYMOTION_VERTICAL_BORDER', '│')
-HORIZONTAL_BORDER = os.environ.get('TMUX_EASYMOTION_HORIZONTAL_BORDER', '─')
 
 
 @functools.lru_cache(maxsize=1024)
@@ -222,6 +220,7 @@ def to_terminal_coords(y: int, x: int) -> tuple[int, int]:
     """
     return y + 1, x + 1
 
+
 def getch():
     """Get a single character from terminal"""
     fd = sys.stdin.fileno()
@@ -361,14 +360,17 @@ def draw_all_panes(panes, max_x, padding_cache, terminal_height):
         # draw vertical borders
         if pane.start_x + pane.width < max_x:
             for y in range(pane.start_y, pane.start_y + visible_height):
-                term_y, term_x = to_terminal_coords(y, pane.start_x + pane.width)
-                sys.stdout.write(f'{ESC}[{term_y};{term_x}H{DIM}{VERTICAL_BORDER}{RESET}')
+                term_y, term_x = to_terminal_coords(
+                    y, pane.start_x + pane.width)
+                sys.stdout.write(f'{ESC}[{term_y};{term_x}H{
+                                 DIM}{VERTICAL_BORDER}{RESET}')
 
         # draw horizontal borders for non-last pane
         end_y = pane.start_y + visible_height
         if end_y < terminal_height and pane != sorted_panes[-1]:
             term_y, term_x = to_terminal_coords(end_y, pane.start_x)
-            sys.stdout.write(f'{ESC}[{term_y};{term_x}H{DIM}{HORIZONTAL_BORDER * pane.width}{RESET}')
+            sys.stdout.write(f'{ESC}[{term_y};{term_x}H{DIM}{
+                             HORIZONTAL_BORDER * pane.width}{RESET}')
 
     sys.stdout.flush()
 
@@ -403,11 +405,13 @@ def draw_all_hints(panes, terminal_height):
             x = pane.start_x + col
             if (y < min(pane.start_y + pane.height, terminal_height) and x + get_char_width(char) <= pane.start_x + pane.width):
                 term_y, term_x = to_terminal_coords(y, x)
-                sys.stdout.write(f'{ESC}[{term_y};{term_x}H{RED_FG}{hint[0]}{RESET}')
+                sys.stdout.write(f'{ESC}[{term_y};{term_x}H{
+                                 HINT1_FG}{hint[0]}{RESET}')
                 char_width = get_char_width(char)
                 if x + char_width < pane.start_x + pane.width:
                     term_y, term_x = to_terminal_coords(y, x + char_width)
-                    sys.stdout.write(f'{ESC}[{term_y};{term_x}H{GREEN_FG}{hint[1]}{RESET}')
+                    sys.stdout.write(f'{ESC}[{term_y};{term_x}H{
+                                     HINT2_FG}{hint[1]}{RESET}')
     sys.stdout.flush()
 
 
@@ -448,10 +452,12 @@ def main():
                 char_width = get_char_width(char)
                 if (y < min(pane.start_y + pane.height, terminal_height) and x + char_width <= pane.start_x + pane.width):
                     # Clear first position and show second character
-                    sys.stdout.write(f'{ESC}[{y + 1};{x + 1}H{GREEN_FG}{hint[1]}{RESET}')
+                    sys.stdout.write(
+                        f'{ESC}[{y + 1};{x + 1}H{HINT2_FG}{hint[1]}{RESET}')
                     # Restore original character in second position (if there's space)
                     if x + char_width + 1 < pane.start_x + pane.width:
-                        sys.stdout.write(f'{ESC}[{y + 1};{x + char_width + 1}H{char}')
+                        sys.stdout.write(
+                            f'{ESC}[{y + 1};{x + char_width + 1}H{char}')
         sys.stdout.flush()
 
         # Handle second character selection
