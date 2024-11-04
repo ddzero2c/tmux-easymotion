@@ -238,7 +238,7 @@ def get_initial_tmux_info():
         '#{pane_top},#{pane_height},#{pane_left},#{pane_width},' + \
         '#{pane_in_mode},#{scroll_position}'
 
-    cmd = ['tmux', 'list-panes', '-F', format_str, '-t', '{last}']
+    cmd = ['tmux', 'list-panes', '-F', format_str]
     output = sh(cmd).strip()
 
     panes_info = []
@@ -294,17 +294,7 @@ class PaneInfo:
 def tmux_pane_id():
     # Get the ID of the pane that launched this script
     source_pane = os.environ.get('TMUX_PANE')
-    if not source_pane:
-        return '%0'
-
-    # We're in a new window, get the pane from the previous window
-    previous_pane = sh(
-        ['tmux', 'list-panes', '-F', '#{pane_id}', '-t', '{last}']).strip()
-    if re.match(r'%\d+', previous_pane):
-        return previous_pane.split('\n')[0]
-
-    # Fallback to current pane if can't get previous
-    return sh(['tmux', 'display-message', '-p', '#{pane_id}']).strip()
+    return source_pane or '%0'
 
 
 def get_terminal_size():
@@ -494,6 +484,7 @@ def main(screen: Screen):
 
     draw_all_panes(panes, max_x, padding_cache, terminal_height, screen)
     screen.refresh()
+    sh(['tmux', 'select-window', '-t', '{end}'])
 
     hints = generate_hints(KEYS)
     search_ch = getch()

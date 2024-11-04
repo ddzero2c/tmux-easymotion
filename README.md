@@ -15,10 +15,10 @@ A: **This one can jump between panes**
 
 ```bash
 # Basic binding
-bind s run-shell "tmux neww ~/.tmux-easymotion/easymotion.py"
+bind s run-shell "tmux neww -d ~/.tmux-easymotion/easymotion.py"
 
 # Or with custom environment variables
-bind s run-shell "tmux neww TMUX_EASYMOTION_KEYS='asdfjkl;' ~/.tmux-easymotion/easymotion.py"
+bind s run-shell "tmux neww -d 'TMUX_EASYMOTION_KEYS=asdfjkl; ~/.tmux-easymotion/easymotion.py'"
 
 # Vim-like binding
 set-window-option -g mode-keys vi
