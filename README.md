@@ -2,6 +2,10 @@
 
 ![demo](https://github.com/user-attachments/assets/19f621c0-9fef-4137-b4f6-03249dae8d31)
 
+
+Q: There are already many plugins with similar functionality, why do we need this one?
+A: **This one can jump between panes**
+
 ### Installation
 
 `$ git clone https://github.com/ddzero2c/tmux-easymotion.git ~/.tmux-easymotion`
