@@ -1,6 +1,6 @@
 # TMUX Easymotion
 
-![demo](https://github.com/user-attachments/assets/19f621c0-9fef-4137-b4f6-03249dae8d31)
+![demo](https://github.com/user-attachments/assets/6f9ef875-47b1-4dee-823d-f1990f2af51e)
 
 
 Q: There are already many plugins with similar functionality, why do we need this one?
