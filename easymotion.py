@@ -161,7 +161,8 @@ def setup_logging():
     logging.basicConfig(
         filename=log_file,
         level=logging.DEBUG,
-        format=f'%(asctime)s - %(levelname)s - {"CURSE" if USE_CURSES else "ANSI"} - %(message)s'
+        format=f'%(asctime)s - %(levelname)s - {
+            "CURSE" if USE_CURSES else "ANSI"} - %(message)s'
     )
 
 
@@ -305,13 +306,6 @@ def get_terminal_size():
     return width, height - 1  # Subtract 1 from height
 
 
-def to_terminal_coords(y: int, x: int) -> tuple[int, int]:
-    """
-    Convert 0-based coordinate system to terminal's 1-based coordinate system
-    """
-    return y + 1, x + 1
-
-
 def getch():
     """Get a single character from terminal"""
     fd = sys.stdin.fileno()
@@ -417,22 +411,18 @@ def draw_all_panes(panes, max_x, padding_cache, terminal_height, screen):
                 if padding_size not in padding_cache:
                     padding_cache[padding_size] = ' ' * padding_size
                 line = line + padding_cache[padding_size]
-            term_y, term_x = to_terminal_coords(pane.start_y + y, pane.start_x)
-            screen.addstr(term_y-1, term_x-1, line[:pane.width])
+            screen.addstr(pane.start_y + y, pane.start_x, line[:pane.width])
 
         # Draw vertical borders
         if pane.start_x + pane.width < max_x:
             for y in range(pane.start_y, pane.start_y + visible_height):
-                term_y, term_x = to_terminal_coords(
-                    y, pane.start_x + pane.width)
-                screen.addstr(term_y-1, term_x-1,
+                screen.addstr(y, pane.start_x + pane.width,
                               VERTICAL_BORDER, screen.A_DIM)
 
         # Draw horizontal borders
         end_y = pane.start_y + visible_height
         if end_y < terminal_height and pane != sorted_panes[-1]:
-            term_y, term_x = to_terminal_coords(end_y, pane.start_x)
-            screen.addstr(term_y-1, term_x-1, HORIZONTAL_BORDER *
+            screen.addstr(end_y, pane.start_x, HORIZONTAL_BORDER *
                           pane.width, screen.A_DIM)
 
     screen.refresh()
@@ -467,12 +457,10 @@ def draw_all_hints(panes, terminal_height, screen):
             y = pane.start_y + line_num
             x = pane.start_x + col
             if (y < min(pane.start_y + pane.height, terminal_height) and x + get_char_width(char) <= pane.start_x + pane.width):
-                term_y, term_x = to_terminal_coords(y, x)
-                screen.addstr(term_y-1, term_x-1, hint[0], screen.A_HINT1)
+                screen.addstr(y, x, hint[0], screen.A_HINT1)
                 char_width = get_char_width(char)
                 if x + char_width < pane.start_x + pane.width:
-                    term_y, term_x = to_terminal_coords(y, x + char_width)
-                    screen.addstr(term_y-1, term_x-1, hint[1], screen.A_HINT2)
+                    screen.addstr(y, x + char_width, hint[1], screen.A_HINT2)
     sys.stdout.flush()
 
 
@@ -507,10 +495,9 @@ def main(screen: Screen):
             char_width = get_char_width(char)
             if (y < min(pane.start_y + pane.height, terminal_height) and
                     x + char_width <= pane.start_x + pane.width):
-                term_y, term_x = to_terminal_coords(y, x)
-                screen.addstr(term_y-1, term_x-1, hint[1], screen.A_HINT2)
+                screen.addstr(y, x, hint[1], screen.A_HINT2)
                 if x + char_width + 1 < pane.start_x + pane.width:
-                    screen.addstr(term_y-1, term_x-1+char_width, char)
+                    screen.addstr(y, x, char)
 
     screen.refresh()
 
