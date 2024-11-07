@@ -461,7 +461,7 @@ def draw_all_hints(panes, terminal_height, screen):
                 char_width = get_char_width(char)
                 if x + char_width < pane.start_x + pane.width:
                     screen.addstr(y, x + char_width, hint[1], screen.A_HINT2)
-    sys.stdout.flush()
+    screen.refresh()
 
 
 @perf_timer("Total execution")
@@ -471,7 +471,6 @@ def main(screen: Screen):
     panes, max_x, padding_cache = init_panes()
 
     draw_all_panes(panes, max_x, padding_cache, terminal_height, screen)
-    screen.refresh()
     sh(['tmux', 'select-window', '-t', '{end}'])
 
     hints = generate_hints(KEYS)
@@ -479,7 +478,6 @@ def main(screen: Screen):
     hint_positions = find_matches(panes, search_ch, hints)
 
     draw_all_hints(panes, terminal_height, screen)
-    screen.refresh()
 
     ch1 = getch()
     if ch1 not in KEYS:
@@ -488,8 +486,6 @@ def main(screen: Screen):
     # Update hints consistently using screen.addstr
     for pane in panes:
         for line_num, col, char, hint in pane.positions:
-            if not hint.startswith(ch1):
-                continue
             y = pane.start_y + line_num
             x = pane.start_x + col
             char_width = get_char_width(char)
@@ -497,7 +493,7 @@ def main(screen: Screen):
                     x + char_width <= pane.start_x + pane.width):
                 screen.addstr(y, x, hint[1], screen.A_HINT2)
                 if x + char_width + 1 < pane.start_x + pane.width:
-                    screen.addstr(y, x, char)
+                    screen.addstr(y, x+char_width, char)
 
     screen.refresh()
 
