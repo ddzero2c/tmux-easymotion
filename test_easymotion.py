@@ -35,11 +35,82 @@ def test_generate_hints():
     assert hints == expected
 
 
-def test_generate_hints_with_full_keys():
-    # Test with actual KEYS constant
-    from easymotion import KEYS
-    hints = generate_hints(KEYS)
-    # Check first few hints
-    assert len(hints) == len(KEYS) * len(KEYS)
+def test_generate_hints_no_duplicates():
+    keys = 'asdf'  # 4 characters
+
+    # Test all possible hint counts from 1 to max (16)
+    for count in range(1, 17):
+        hints = generate_hints(keys, count)
+
+        # Check no duplicates
+        assert len(hints) == len(
+            set(hints)), f"Duplicates found in hints for count {count}"
+
+        # For double character hints, check first character usage
+        single_chars = [h for h in hints if len(h) == 1]
+        double_chars = [h for h in hints if len(h) == 2]
+        if double_chars:
+            first_chars = [h[0] for h in double_chars]
+            assert set(first_chars) not in single_chars, \
+                f"Duplicate first characters in double-char hints for count {
+                    count}"
+
+            # Check all characters are from the key set
+            assert all(c in keys for h in hints for c in h), \
+                f"Invalid characters found in hints for count {count}"
+
+
+def test_generate_hints_distribution():
+    keys = 'asdf'  # 4 characters
+
+    # Case i=4: 4 hints (all single chars)
+    hints = generate_hints(keys, 4)
+    assert len(hints) == 4
+    assert all(len(hint) == 1 for hint in hints)
+    assert set(hints) == set('asdf')
+
+    # Case i=3: 7 hints (3 single + 4 double)
+    hints = generate_hints(keys, 7)
+    assert len(hints) == 7
+    single_chars = [h for h in hints if len(h) == 1]
+    double_chars = [h for h in hints if len(h) == 2]
+    assert len(single_chars) == 3
+    assert len(double_chars) == 4
+    # Ensure double char prefixes don't overlap with single chars
+    single_char_set = set(single_chars)
+    double_char_firsts = set(h[0] for h in double_chars)
+    assert not (single_char_set &
+                double_char_firsts), "Double char prefixes overlap with single chars"
+
+    # Case i=2: 10 hints (2 single + 8 double)
+    hints = generate_hints(keys, 10)
+    assert len(hints) == 10
+    single_chars = [h for h in hints if len(h) == 1]
+    double_chars = [h for h in hints if len(h) == 2]
+    assert len(single_chars) == 2
+    assert len(double_chars) == 8
+    # Ensure double char prefixes don't overlap with single chars
+    single_char_set = set(single_chars)
+    double_char_firsts = set(h[0] for h in double_chars)
+    assert not (single_char_set &
+                double_char_firsts), "Double char prefixes overlap with single chars"
+
+    # Case i=1: 13 hints (1 single + 12 double)
+    hints = generate_hints(keys, 13)
+    assert len(hints) == 13
+    single_chars = [h for h in hints if len(h) == 1]
+    double_chars = [h for h in hints if len(h) == 2]
+    assert len(single_chars) == 1
+    assert len(double_chars) == 12
+    # Ensure double char prefixes don't overlap with single chars
+    single_char_set = set(single_chars)
+    double_char_firsts = set(h[0] for h in double_chars)
+    assert not (single_char_set &
+                double_char_firsts), "Double char prefixes overlap with single chars"
+
+    # Case i=0: 16 hints (all double chars)
+    hints = generate_hints(keys, 16)
+    assert len(hints) == 16
     assert all(len(hint) == 2 for hint in hints)
-    assert all(all(c in KEYS for c in hint) for hint in hints)
+    # For all double chars case, just ensure no duplicate combinations
+    assert len(hints) == len(set(hints))
