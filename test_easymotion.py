@@ -1,8 +1,5 @@
-import time
-from unittest.mock import patch
-
-from easymotion import (draw_all_panes, generate_hints, get_char_width,
-                        get_string_width, get_true_position, init_panes)
+from easymotion import (generate_hints, get_char_width, get_string_width,
+                        get_true_position)
 
 
 def test_get_char_width():
@@ -50,10 +47,9 @@ def test_generate_hints_no_duplicates():
         single_chars = [h for h in hints if len(h) == 1]
         double_chars = [h for h in hints if len(h) == 2]
         if double_chars:
-            first_chars = [h[0] for h in double_chars]
-            assert set(first_chars) not in single_chars, \
-                f"Duplicate first characters in double-char hints for count {
-                    count}"
+            for double_char in double_chars:
+                assert double_char[0] not in single_chars, f"Double char hint {
+                    double_char} starts with single char hint"
 
             # Check all characters are from the key set
             assert all(c in keys for h in hints for c in h), \

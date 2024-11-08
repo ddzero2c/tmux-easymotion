@@ -237,7 +237,8 @@ def get_initial_tmux_info():
     """Get all needed tmux info in one optimized call"""
     format_str = '#{pane_id},#{window_zoomed_flag},#{pane_active},' + \
         '#{pane_top},#{pane_height},#{pane_left},#{pane_width},' + \
-        '#{pane_in_mode},#{scroll_position}'
+        '#{pane_in_mode},#{scroll_position},' + \
+        '#{cursor_y},#{cursor_x},#{copy_cursor_y},#{copy_cursor_x}'
 
     cmd = ['tmux', 'list-panes', '-F', format_str]
     output = sh(cmd).strip()
@@ -248,12 +249,10 @@ def get_initial_tmux_info():
             continue
 
         fields = line.split(',')
-        if len(fields) != 9:
-            continue
-
         # Use destructuring assignment for better readability and performance
         (pane_id, zoomed, active, top, height,
-         left, width, in_mode, scroll_pos) = fields
+         left, width, in_mode, scroll_pos,
+         cursor_y, cursor_x, copy_cursor_y, copy_cursor_x) = fields
 
         # Only show all panes in non-zoomed state, or only active pane in zoomed state
         if zoomed == "1" and active != "1":
@@ -261,6 +260,7 @@ def get_initial_tmux_info():
 
         pane = PaneInfo(
             pane_id=pane_id,
+            active=active == "1",
             start_y=int(top),
             height=int(height),
             start_x=int(left),
@@ -271,16 +271,26 @@ def get_initial_tmux_info():
         pane.copy_mode = (in_mode == "1")
         pane.scroll_position = int(scroll_pos or 0)
 
+        # Set cursor position
+        if in_mode == "1":  # If in copy mode
+            pane.cursor_y = int(copy_cursor_y)
+            pane.cursor_x = int(copy_cursor_x)
+        else:  # If not in copy mode, cursor is at bottom left
+            pane.cursor_y = int(cursor_y)
+            pane.cursor_x = int(cursor_x)
+
         panes_info.append(pane)
 
     return panes_info
 
 
 class PaneInfo:
-    __slots__ = ('pane_id', 'start_y', 'height', 'start_x', 'width',
-                 'lines', 'positions', 'copy_mode', 'scroll_position')
+    __slots__ = ('pane_id', 'active', 'start_y', 'height', 'start_x', 'width',
+                 'lines', 'positions', 'copy_mode', 'scroll_position',
+                 'cursor_y', 'cursor_x')
 
-    def __init__(self, pane_id, start_y, height, start_x, width):
+    def __init__(self, pane_id, active, start_y, height, start_x, width):
+        self.active = active
         self.pane_id = pane_id
         self.start_y = start_y
         self.height = height
@@ -290,12 +300,8 @@ class PaneInfo:
         self.positions = []
         self.copy_mode = False
         self.scroll_position = 0
-
-
-def tmux_pane_id():
-    # Get the ID of the pane that launched this script
-    source_pane = os.environ.get('TMUX_PANE')
-    return source_pane or '%0'
+        self.cursor_y = 0
+        self.cursor_x = 0
 
 
 def get_terminal_size():
@@ -358,27 +364,21 @@ def tmux_move_cursor(pane, line_num, true_col):
         sh(cmd)
 
 
-class HintTree:
-    def __init__(self):
-        self.targets = {}  # Store single key mappings
-        self.children = {}  # Store double key mapping subtrees
+def assign_hints_by_distance(matches, cursor_y, cursor_x):
+    """Sort matches by distance and assign hints"""
+    # Calculate distances and sort
+    matches_with_dist = []
+    for match in matches:
+        pane, line_num, col = match
+        dist = (line_num - cursor_y)**2 + (col - cursor_x)**2
+        matches_with_dist.append((dist, match))
 
-    def add(self, hint, target):
-        if len(hint) == 1:
-            self.targets[hint] = target
-        else:
-            first, rest = hint[0], hint[1]
-            if first not in self.children:
-                self.children[first] = HintTree()
-            self.children[first].add(rest, target)
+    matches_with_dist.sort(key=lambda x: x[0])  # Sort by distance
 
-    def get(self, key_sequence):
-        if len(key_sequence) == 1:
-            return self.targets.get(key_sequence)
-        first, rest = key_sequence[0], key_sequence[1]
-        if first in self.children:
-            return self.children[first].get(rest)
-        return None
+    # Generate hints and create mapping
+    hints = generate_hints(KEYS, len(matches_with_dist))
+    logging.debug(f'{hints}')
+    return {hint: match for (_, match), hint in zip(matches_with_dist, hints)}
 
 
 def generate_hints(keys: str, needed_count: Optional[int] = None) -> List[str]:
@@ -399,28 +399,29 @@ def generate_hints(keys: str, needed_count: Optional[int] = None) -> List[str]:
 
     # Generate all possible double char combinations
     double_char_hints = []
-    for prefix in keys_list:  # Including first char as prefix
+    for prefix in keys_list:
         for suffix in keys_list:
             double_char_hints.append(prefix + suffix)
-
-    # If we need maximum possible combinations, return all double-char hints
-    if needed_count == max_hints:
-        return double_char_hints
 
     # Dynamically calculate how many single chars to keep
     single_chars = 0
     for i in range(key_count, 0, -1):
-        if needed_count <= (key_count - i + 1) * key_count:
+        if needed_count <= (key_count - i) * key_count + i:
             single_chars = i
             break
 
     hints = []
-    # Take needed doubles from the end
-    needed_doubles = needed_count - single_chars
-    hints.extend(double_char_hints[-needed_doubles:])
-
     # Add single chars at the beginning
-    hints[0:0] = keys_list[:single_chars]
+    single_char_hints = keys_list[:single_chars]
+    hints.extend(single_char_hints)
+
+    # Filter out double char hints that start with any single char hint
+    filtered_doubles = [h for h in double_char_hints 
+                       if h[0] not in single_char_hints]
+
+    # Take needed doubles
+    needed_doubles = needed_count - single_chars
+    hints.extend(filtered_doubles[:needed_doubles])
 
     return hints[:needed_count]
 
@@ -504,49 +505,55 @@ def find_matches(panes, search_ch):
 
 
 @perf_timer("Drawing hints")
-def update_hints_display(screen, panes, hint_tree, current_key):
+def update_hints_display(screen, positions, current_key):
     """Update hint display based on current key sequence"""
-    terminal_width, terminal_height = get_terminal_size()
+    for screen_y, screen_x, pane_right_edge, char, next_char, hint in positions:
+        logging.debug(f'{screen_x} {pane_right_edge} {char} {next_char} {hint}')
+        if hint.startswith(current_key):
+            next_x = screen_x + get_char_width(char)
+            if next_x < pane_right_edge:
+                logging.debug(f"Restoring next char {next_x} {next_char}")
+                screen.addstr(screen_y, next_x, next_char)
+        else:
+            logging.debug(f"Non-matching hint {screen_x} {screen_y} {char}")
+            # Restore original character for non-matching hints
+            screen.addstr(screen_y, screen_x, char)
+            # Always restore second character
+            next_x = screen_x + get_char_width(char)
+            if next_x < pane_right_edge:
+                logging.debug(f"Restoring next char {next_x} {next_char}")
+                screen.addstr(screen_y, next_x, next_char)
+            continue
 
-    for pane in panes:
-        for line_num, col, char, hint in pane.positions:
-            y = pane.start_y + line_num
-            x = pane.start_x + col
-
-            # First restore the second character position to original character
-            if len(hint) > 1:
-                char_width = get_char_width(char)
-                if x + char_width < pane.start_x + pane.width:
-                    screen.addstr(y, x + char_width, char)
-
-            # Then show new hints based on current input
-            if hint.startswith(current_key):
-                if len(hint) > len(current_key):
-                    screen.addstr(y, x, hint[len(current_key)], screen.A_HINT2)
+        # For matching hints:
+        if len(hint) > len(current_key):
+            # Show remaining hint character
+            screen.addstr(screen_y, screen_x,
+                          hint[len(current_key)], screen.A_HINT2)
+        else:
+            # If hint is fully entered, restore all original characters
+            screen.addstr(screen_y, screen_x, char)
+            next_x = screen_x + get_char_width(char)
+            if next_x < pane_right_edge:
+                screen.addstr(screen_y, next_x, next_char)
 
     screen.refresh()
 
 
-def draw_all_hints(panes, terminal_height, screen):
+def draw_all_hints(positions, terminal_height, screen):
     """Draw all hints across all panes"""
-    for pane in panes:
-        for line_num, col, char, hint in pane.positions:
-            y = pane.start_y + line_num
-            x = pane.start_x + col
+    for screen_y, screen_x, pane_right_edge, char, next_char, hint in positions:
+        if screen_y >= terminal_height:
+            continue
 
-            # Ensure position is within visible range
-            if (y < min(pane.start_y + pane.height, terminal_height) and
-                    x + get_char_width(char) <= pane.start_x + pane.width):
+        # Draw first character of hint
+        screen.addstr(screen_y, screen_x, hint[0], screen.A_HINT1)
 
-                # Always show first character
-                screen.addstr(y, x, hint[0], screen.A_HINT1)
-
-                # Only show second character for two-character hints
-                if len(hint) > 1:
-                    char_width = get_char_width(char)
-                    if x + char_width < pane.start_x + pane.width:
-                        screen.addstr(y, x + char_width,
-                                      hint[1], screen.A_HINT2)
+        # Draw second character if hint has two chars and space allows
+        if len(hint) > 1:
+            next_x = screen_x + get_char_width(char)
+            if next_x < pane_right_edge:
+                screen.addstr(screen_y, next_x, hint[1], screen.A_HINT2)
 
     screen.refresh()
 
@@ -562,16 +569,42 @@ def main(screen: Screen):
 
     search_ch = getch()
     matches = find_matches(panes, search_ch)
-    hints = generate_hints(KEYS, len(matches))
 
-    # Build hint tree
-    hint_tree = HintTree()
-    for match, hint in zip(matches, hints):
-        hint_tree.add(hint, match)
-        pane, line_num, col = match
-        pane.positions.append((line_num, col, pane.lines[line_num][col], hint))
+    # If only one match, jump directly
+    if len(matches) == 1:
+        pane, line_num, col = matches[0]
+        true_col = get_true_position(pane.lines[line_num], col)
+        tmux_move_cursor(pane, line_num, true_col)
+        return
 
-    draw_all_hints(panes, terminal_height, screen)
+    # Get cursor position from current pane
+    current_pane = next(p for p in panes if p.active)
+    cursor_y = current_pane.cursor_y
+    cursor_x = current_pane.cursor_x
+    logging.debug(f"Cursor position: {current_pane.pane_id}, {
+                  cursor_y}, {cursor_x}")
+
+    # Replace HintTree with direct hint assignment
+    hint_mapping = assign_hints_by_distance(matches, cursor_y, cursor_x)
+
+    # Create flat positions list with all needed info
+    positions = [
+        (pane.start_y + line_num,  # screen_y
+         pane.start_x + col,       # screen_x
+         pane.start_x + pane.width,  # pane_right_edge
+         char,                     # original char at hint position
+         # original char at second hint position (if exists)
+         next_char,
+         hint)
+        for hint, (pane, line_num, col) in hint_mapping.items()
+        for char, next_char in [(
+            pane.lines[line_num][col],
+            pane.lines[line_num][col+1] if col +
+            1 < len(pane.lines[line_num]) else ''
+        )]
+    ]
+
+    draw_all_hints(positions, terminal_height, screen)
 
     # Handle user input
     key_sequence = ""
@@ -581,7 +614,7 @@ def main(screen: Screen):
             return
 
         key_sequence += ch
-        target = hint_tree.get(key_sequence)
+        target = hint_mapping.get(key_sequence)
 
         if target:
             pane, line_num, col = target
@@ -592,7 +625,7 @@ def main(screen: Screen):
             return  # Exit program
         else:
             # Update display to show remaining possible hints
-            update_hints_display(screen, panes, hint_tree, key_sequence)
+            update_hints_display(screen, positions, key_sequence)
 
 
 if __name__ == '__main__':
