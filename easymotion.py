@@ -416,7 +416,7 @@ def assign_hints_by_distance(matches, cursor_y, cursor_x):
     matches_with_dist = []
     for match in matches:
         pane, line_num, col = match
-        dist = (line_num - cursor_y)**2 + (col - cursor_x)**2
+        dist = (pane.start_y + line_num - cursor_y)**2 + (pane.start_x + col - cursor_x)**2
         matches_with_dist.append((dist, match))
 
     matches_with_dist.sort(key=lambda x: x[0])  # Sort by distance
@@ -639,8 +639,8 @@ def main(screen: Screen):
         return
 
     # Get cursor position from current pane
-    cursor_y = current_pane.cursor_y
-    cursor_x = current_pane.cursor_x
+    cursor_y = current_pane.start_y + current_pane.cursor_y
+    cursor_x = current_pane.start_x + current_pane.cursor_x
     logging.debug(f"Cursor position: {current_pane.pane_id}, {
                   cursor_y}, {cursor_x}")
 
