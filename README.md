@@ -37,6 +37,9 @@ set -g @easymotion-debug 'false'
 
 # Performance logging - writes timing info to ~/easymotion.log (default: false)
 set -g @easymotion-perf 'false'
+
+# Case sensitive search (default: false)
+set -g @easymotion-case-sensitive 'false'
 ```
 
 

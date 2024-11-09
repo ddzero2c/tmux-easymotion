@@ -20,6 +20,7 @@ HORIZONTAL_BORDER=$(get_tmux_option "@easymotion-horizontal-border" "─")
 USE_CURSES=$(get_tmux_option "@easymotion-use-curses" "false")
 DEBUG=$(get_tmux_option "@easymotion-debug" "false")
 PERF=$(get_tmux_option "@easymotion-perf" "false")
+CASE_SENSITIVE=$(get_tmux_option "@easymotion-case-sensitive" "false")
 
 # Execute Python script with environment variables
 tmux bind $(get_tmux_option "@easymotion-key" "s") run-shell "TMUX_EASYMOTION_HINTS='$HINTS' \
@@ -28,4 +29,5 @@ tmux bind $(get_tmux_option "@easymotion-key" "s") run-shell "TMUX_EASYMOTION_HI
     TMUX_EASYMOTION_USE_CURSES='$USE_CURSES' \
     TMUX_EASYMOTION_DEBUG='$DEBUG' \
     TMUX_EASYMOTION_PERF='$PERF' \
+    TMUX_EASYMOTION_CASE_SENSITIVE='$CASE_SENSITIVE' \
     $CURRENT_DIR/easymotion.py"

@@ -14,6 +14,7 @@ from typing import List, Optional
 
 # Configuration from environment
 HINTS = os.environ.get('TMUX_EASYMOTION_HINTS', 'asdfghjkl;')
+CASE_SENSITIVE = os.environ.get('TMUX_EASYMOTION_CASE_SENSITIVE', 'false').lower() == 'true'
 VERTICAL_BORDER = os.environ.get('TMUX_EASYMOTION_VERTICAL_BORDER', '│')
 HORIZONTAL_BORDER = os.environ.get('TMUX_EASYMOTION_HORIZONTAL_BORDER', '─')
 USE_CURSES = os.environ.get(
@@ -491,7 +492,10 @@ def find_matches(panes, search_ch):
             # Search each position in the line
             pos = 0
             while pos < len(line):
-                idx = line.lower().find(search_ch.lower(), pos)
+                if CASE_SENSITIVE:
+                    idx = line.find(search_ch, pos)
+                else:
+                    idx = line.lower().find(search_ch.lower(), pos)
                 if idx == -1:
                     break
 
