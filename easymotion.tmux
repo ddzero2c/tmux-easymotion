@@ -14,7 +14,7 @@ get_tmux_option() {
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Define all options and their default values
-HINTS=$(get_tmux_option "@easymotion-hints" "asdfghjkl;")
+HINTS=$(get_tmux_option "@easymotion-hints" "asdghklqwertyuiopzxcvbnmfj;")
 VERTICAL_BORDER=$(get_tmux_option "@easymotion-vertical-border" "│")
 HORIZONTAL_BORDER=$(get_tmux_option "@easymotion-horizontal-border" "─")
 USE_CURSES=$(get_tmux_option "@easymotion-use-curses" "false")

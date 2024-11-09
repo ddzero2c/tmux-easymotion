@@ -22,7 +22,7 @@ Press `prefix` + `I` to install
 ### Options:
 
 ```bash
-# Keys used for hints (default: 'asdfghjkl;')
+# Keys used for hints (default: 'asdghklqwertyuiopzxcvbnmfj;')
 set -g @easymotion-hints 'asdfghjkl;'
 
 # Border characters
@@ -30,19 +30,19 @@ set -g @easymotion-vertical-border '│'
 set -g @easymotion-horizontal-border '─'
 
 # Use curses instead of ansi escape sequences (default: false)
-set -g @easymotion-use-curses 'false'
+set -g @easymotion-use-curses 'true'
 
 # Debug mode - writes debug info to ~/easymotion.log (default: false)
-set -g @easymotion-debug 'false'
+set -g @easymotion-debug 'true'
 
 # Performance logging - writes timing info to ~/easymotion.log (default: false)
-set -g @easymotion-perf 'false'
+set -g @easymotion-perf 'true'
 
 # Case sensitive search (default: false)
-set -g @easymotion-case-sensitive 'false'
+set -g @easymotion-case-sensitive 'true'
 
 # Enable smartsign feature (default: false)
-set -g @easymotion-smartsign 'false'
+set -g @easymotion-smartsign 'true'
 ```
 
 

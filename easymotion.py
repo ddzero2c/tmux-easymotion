@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from typing import List, Optional
 
 # Configuration from environment
-HINTS = os.environ.get('TMUX_EASYMOTION_HINTS', 'asdfghjkl;')
+HINTS = os.environ.get('TMUX_EASYMOTION_HINTS', 'asdghklqwertyuiopzxcvbnmfj;')
 CASE_SENSITIVE = os.environ.get('TMUX_EASYMOTION_CASE_SENSITIVE', 'false').lower() == 'true'
 SMARTSIGN = os.environ.get('TMUX_EASYMOTION_SMARTSIGN', 'false').lower() == 'true'
 
