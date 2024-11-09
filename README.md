@@ -40,6 +40,9 @@ set -g @easymotion-perf 'false'
 
 # Case sensitive search (default: false)
 set -g @easymotion-case-sensitive 'false'
+
+# Enable smartsign feature (default: false)
+set -g @easymotion-smartsign 'false'
 ```
 
 

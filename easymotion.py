@@ -15,6 +15,32 @@ from typing import List, Optional
 # Configuration from environment
 HINTS = os.environ.get('TMUX_EASYMOTION_HINTS', 'asdfghjkl;')
 CASE_SENSITIVE = os.environ.get('TMUX_EASYMOTION_CASE_SENSITIVE', 'false').lower() == 'true'
+SMARTSIGN = os.environ.get('TMUX_EASYMOTION_SMARTSIGN', 'false').lower() == 'true'
+
+# Smartsign mapping table
+SMARTSIGN_TABLE = {
+    ',': '<',
+    '.': '>',
+    '/': '?',
+    '1': '!',
+    '2': '@',
+    '3': '#',
+    '4': '$',
+    '5': '%',
+    '6': '^',
+    '7': '&',
+    '8': '*',
+    '9': '(',
+    '0': ')',
+    '-': '_',
+    '=': '+',
+    ';': ':',
+    '[': '{',
+    ']': '}',
+    '`': '~',
+    "'": '"',
+    '\\': '|'
+}
 VERTICAL_BORDER = os.environ.get('TMUX_EASYMOTION_VERTICAL_BORDER', '│')
 HORIZONTAL_BORDER = os.environ.get('TMUX_EASYMOTION_HORIZONTAL_BORDER', '─')
 USE_CURSES = os.environ.get(
@@ -487,22 +513,30 @@ def draw_all_panes(panes, max_x, padding_cache, terminal_height, screen):
 def find_matches(panes, search_ch):
     """Find all matches and return match list"""
     matches = []
+    
+    # If smartsign is enabled, add corresponding symbol
+    search_chars = [search_ch]
+    if SMARTSIGN and search_ch in SMARTSIGN_TABLE:
+        search_chars.append(SMARTSIGN_TABLE[search_ch])
+    
     for pane in panes:
         for line_num, line in enumerate(pane.lines):
-            # Search each position in the line
             pos = 0
             while pos < len(line):
-                if CASE_SENSITIVE:
-                    idx = line.find(search_ch, pos)
-                else:
-                    idx = line.lower().find(search_ch.lower(), pos)
-                if idx == -1:
+                found = False
+                for ch in search_chars:
+                    if CASE_SENSITIVE:
+                        idx = line.find(ch, pos)
+                    else:
+                        idx = line.lower().find(ch.lower(), pos)
+                    if idx != -1:
+                        visual_col = sum(get_char_width(c) for c in line[:idx])
+                        matches.append((pane, line_num, visual_col))
+                        found = True
+                        pos = idx + 1
+                        break
+                if not found:
                     break
-
-                # Calculate visual column position
-                visual_col = sum(get_char_width(c) for c in line[:idx])
-                matches.append((pane, line_num, visual_col))
-                pos = idx + 1
 
     return matches
 
