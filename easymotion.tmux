@@ -1,15 +1,31 @@
 #!/usr/bin/env bash
 
 get_tmux_option() {
-  local option=$1
-  local default_value=$2
-  local option_value=$(tmux show-option -gqv "$option")
-  if [ -z $option_value ]; then
-    echo $default_value
-  else
-    echo $option_value
-  fi
+    local option=$1
+    local default_value=$2
+    local option_value=$(tmux show-option -gqv "$option")
+    if [ -z $option_value ]; then
+        echo $default_value
+    else
+        echo $option_value
+    fi
 }
 
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-tmux bind $(get_tmux_option "@easymotion-key" "s") run-shell "tmux neww -d $CURRENT_DIR/easymotion.py"
+
+# Define all options and their default values
+HINTS=$(get_tmux_option "@easymotion-hints" "asdfghjkl;")
+VERTICAL_BORDER=$(get_tmux_option "@easymotion-vertical-border" "│")
+HORIZONTAL_BORDER=$(get_tmux_option "@easymotion-horizontal-border" "─")
+USE_CURSES=$(get_tmux_option "@easymotion-use-curses" "false")
+DEBUG=$(get_tmux_option "@easymotion-debug" "false")
+PERF=$(get_tmux_option "@easymotion-perf" "false")
+
+# Execute Python script with environment variables
+tmux bind $(get_tmux_option "@easymotion-key" "s") run-shell "TMUX_EASYMOTION_HINTS='$HINTS' \
+    TMUX_EASYMOTION_VERTICAL_BORDER='$VERTICAL_BORDER' \
+    TMUX_EASYMOTION_HORIZONTAL_BORDER='$HORIZONTAL_BORDER' \
+    TMUX_EASYMOTION_USE_CURSES='$USE_CURSES' \
+    TMUX_EASYMOTION_DEBUG='$DEBUG' \
+    TMUX_EASYMOTION_PERF='$PERF' \
+    $CURRENT_DIR/easymotion.py"

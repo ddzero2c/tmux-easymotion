@@ -3,7 +3,6 @@ import curses
 import functools
 import logging
 import os
-import re
 import subprocess
 import sys
 import termios
@@ -14,7 +13,7 @@ from abc import ABC, abstractmethod
 from typing import List, Optional
 
 # Configuration from environment
-KEYS = os.environ.get('TMUX_EASYMOTION_KEYS', 'asdfghjkl;')
+HINTS = os.environ.get('TMUX_EASYMOTION_HINTS', 'asdfghjkl;')
 VERTICAL_BORDER = os.environ.get('TMUX_EASYMOTION_VERTICAL_BORDER', '│')
 HORIZONTAL_BORDER = os.environ.get('TMUX_EASYMOTION_HORIZONTAL_BORDER', '─')
 USE_CURSES = os.environ.get(
@@ -376,7 +375,7 @@ def assign_hints_by_distance(matches, cursor_y, cursor_x):
     matches_with_dist.sort(key=lambda x: x[0])  # Sort by distance
 
     # Generate hints and create mapping
-    hints = generate_hints(KEYS, len(matches_with_dist))
+    hints = generate_hints(HINTS, len(matches_with_dist))
     logging.debug(f'{hints}')
     return {hint: match for (_, match), hint in zip(matches_with_dist, hints)}
 
@@ -610,7 +609,7 @@ def main(screen: Screen):
     key_sequence = ""
     while True:
         ch = getch()
-        if ch not in KEYS:
+        if ch not in HINTS:
             return
 
         key_sequence += ch

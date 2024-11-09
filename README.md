@@ -14,42 +14,31 @@ Add plugin to the list of TPM plugins in ~/.tmux.conf:
 ```bash
 set -g @plugin 'ddzero2c/tmux-easymotion'
 set -g @easymotion-key 's'
-
 ```
 
-### Manual Installation
+Press `prefix` + `I` to install
 
-`$ git clone https://github.com/ddzero2c/tmux-easymotion.git ~/.tmux-easymotion`
 
-Add plugin to the list of TPM plugins in ~/.tmux.conf:
-
-```bash
-# Basic binding
-bind s run-shell "tmux neww -d ~/.tmux-easymotion/easymotion.py"
-
-# Or with custom environment variables
-bind s run-shell "tmux neww -d 'TMUX_EASYMOTION_KEYS=asdfjkl; ~/.tmux-easymotion/easymotion.py'"
-```
-
-Available environment variables(default values):
+### Options:
 
 ```bash
-# Keys used for hints
-TMUX_EASYMOTION_KEYS="asdfghjkl;"
-
-# For old users who need curses instead of ansi escape sequences
-TMUX_EASYMOTION_USE_CURSES="true"
+# Keys used for hints (default: 'asdfghjkl;')
+set -g @easymotion-hints 'asdfghjkl;'
 
 # Border characters
-TMUX_EASYMOTION_VERTICAL_BORDER="│"
-TMUX_EASYMOTION_HORIZONTAL_BORDER="─"
+set -g @easymotion-vertical-border '│'
+set -g @easymotion-horizontal-border '─'
 
-# Debug mode - writes debug info to ~/easymotion.log
-TMUX_EASYMOTION_DEBUG="false"
+# Use curses instead of ansi escape sequences (default: false)
+set -g @easymotion-use-curses 'false'
 
-# Performance logging - writes timing info to ~/easymotion.log
-TMUX_EASYMOTION_PERF="false"
+# Debug mode - writes debug info to ~/easymotion.log (default: false)
+set -g @easymotion-debug 'false'
+
+# Performance logging - writes timing info to ~/easymotion.log (default: false)
+set -g @easymotion-perf 'false'
 ```
+
 
 ### Vim-like Configuration
 
