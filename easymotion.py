@@ -605,6 +605,8 @@ def main(screen: Screen):
     sh(['tmux', 'select-window', '-t', '{end}'])
 
     search_ch = getch()
+    if search_ch =='\x03':
+        return
     matches = find_matches(panes, search_ch)
 
     # If only one match, jump directly
