@@ -14,8 +14,10 @@ from typing import List, Optional
 
 # Configuration from environment
 HINTS = os.environ.get('TMUX_EASYMOTION_HINTS', 'asdghklqwertyuiopzxcvbnmfj;')
-CASE_SENSITIVE = os.environ.get('TMUX_EASYMOTION_CASE_SENSITIVE', 'false').lower() == 'true'
-SMARTSIGN = os.environ.get('TMUX_EASYMOTION_SMARTSIGN', 'false').lower() == 'true'
+CASE_SENSITIVE = os.environ.get(
+    'TMUX_EASYMOTION_CASE_SENSITIVE', 'false').lower() == 'true'
+SMARTSIGN = os.environ.get(
+    'TMUX_EASYMOTION_SMARTSIGN', 'false').lower() == 'true'
 
 # Smartsign mapping table
 SMARTSIGN_TABLE = {
@@ -338,15 +340,33 @@ def get_terminal_size():
     return width, height - 1  # Subtract 1 from height
 
 
-def getch():
-    """Get a single character from terminal"""
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        ch = sys.stdin.read(1)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+def getch(input_file=None):
+    """Get a single character from terminal or file
+
+    Args:
+        input_file: Optional filename to read from. If None, read from stdin.
+                   File will be deleted after reading if specified.
+    """
+    if input_file is None:
+        # Read from stdin
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+    else:
+        # Read from file and delete it
+        try:
+            with open(input_file, 'r') as f:
+                ch = f.read(1)
+        except FileNotFoundError:
+            return '\x03'  # Return Ctrl+C if file not found
+        except Exception as e:
+            logging.error(f"Error reading from file: {str(e)}")
+            return '\x03'
+
     return ch
 
 
@@ -442,8 +462,8 @@ def generate_hints(keys: str, needed_count: Optional[int] = None) -> List[str]:
     hints.extend(single_char_hints)
 
     # Filter out double char hints that start with any single char hint
-    filtered_doubles = [h for h in double_char_hints 
-                       if h[0] not in single_char_hints]
+    filtered_doubles = [h for h in double_char_hints
+                        if h[0] not in single_char_hints]
 
     # Take needed doubles
     needed_doubles = needed_count - single_chars
@@ -513,12 +533,12 @@ def draw_all_panes(panes, max_x, padding_cache, terminal_height, screen):
 def find_matches(panes, search_ch):
     """Find all matches and return match list"""
     matches = []
-    
+
     # If smartsign is enabled, add corresponding symbol
     search_chars = [search_ch]
     if SMARTSIGN and search_ch in SMARTSIGN_TABLE:
         search_chars.append(SMARTSIGN_TABLE[search_ch])
-    
+
     for pane in panes:
         for line_num, line in enumerate(pane.lines):
             pos = 0
@@ -545,7 +565,8 @@ def find_matches(panes, search_ch):
 def update_hints_display(screen, positions, current_key):
     """Update hint display based on current key sequence"""
     for screen_y, screen_x, pane_right_edge, char, next_char, hint in positions:
-        logging.debug(f'{screen_x} {pane_right_edge} {char} {next_char} {hint}')
+        logging.debug(f'{screen_x} {pane_right_edge} {
+                      char} {next_char} {hint}')
         if hint.startswith(current_key):
             next_x = screen_x + get_char_width(char)
             if next_x < pane_right_edge:
@@ -600,13 +621,14 @@ def main(screen: Screen):
     setup_logging()
     terminal_width, terminal_height = get_terminal_size()
     panes, max_x, padding_cache = init_panes()
-
+    current_pane = next(p for p in panes if p.active)
     draw_all_panes(panes, max_x, padding_cache, terminal_height, screen)
-    sh(['tmux', 'select-window', '-t', '{end}'])
 
-    search_ch = getch()
-    if search_ch =='\x03':
+    # Read character from temporary file
+    search_ch = getch(sys.argv[1])
+    if search_ch == '\x03':
         return
+    sh(['tmux', 'select-window', '-t', '{end}'])
     matches = find_matches(panes, search_ch)
 
     # If only one match, jump directly
@@ -617,7 +639,6 @@ def main(screen: Screen):
         return
 
     # Get cursor position from current pane
-    current_pane = next(p for p in panes if p.active)
     cursor_y = current_pane.cursor_y
     cursor_x = current_pane.cursor_x
     logging.debug(f"Cursor position: {current_pane.pane_id}, {
