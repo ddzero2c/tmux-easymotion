@@ -1,5 +1,8 @@
 # TMUX Easymotion
 
+- Tmux prefix is `Ctrl+q`:
+- Trigger key is `s`
+
 ![demo](https://github.com/user-attachments/assets/6f9ef875-47b1-4dee-823d-f1990f2af51e)
 
 
