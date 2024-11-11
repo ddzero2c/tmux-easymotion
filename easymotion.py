@@ -619,18 +619,16 @@ def draw_all_hints(positions, terminal_height, screen):
 @perf_timer("Total execution")
 def main(screen: Screen):
     setup_logging()
-    terminal_width, terminal_height = get_terminal_size()
     panes, max_x, padding_cache = init_panes()
-    current_pane = next(p for p in panes if p.active)
-    draw_all_panes(panes, max_x, padding_cache, terminal_height, screen)
 
     # Read character from temporary file
     search_ch = getch(sys.argv[1])
     if search_ch == '\x03':
         return
-    sh(['tmux', 'select-window', '-t', '{end}'])
     matches = find_matches(panes, search_ch)
-
+    if len(matches) == 0:
+        sh(['tmux', 'display-message', 'no match'])
+        return
     # If only one match, jump directly
     if len(matches) == 1:
         pane, line_num, col = matches[0]
@@ -639,6 +637,7 @@ def main(screen: Screen):
         return
 
     # Get cursor position from current pane
+    current_pane = next(p for p in panes if p.active)
     cursor_y = current_pane.start_y + current_pane.cursor_y
     cursor_x = current_pane.start_x + current_pane.cursor_x
     logging.debug(f"Cursor position: {current_pane.pane_id}, {
@@ -664,7 +663,10 @@ def main(screen: Screen):
         )]
     ]
 
+    terminal_width, terminal_height = get_terminal_size()
+    draw_all_panes(panes, max_x, padding_cache, terminal_height, screen)
     draw_all_hints(positions, terminal_height, screen)
+    sh(['tmux', 'select-window', '-t', '{end}'])
 
     # Handle user input
     key_sequence = ""
