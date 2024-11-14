@@ -189,8 +189,7 @@ def setup_logging():
     logging.basicConfig(
         filename=log_file,
         level=logging.DEBUG,
-        format=f'%(asctime)s - %(levelname)s - {
-            "CURSE" if USE_CURSES else "ANSI"} - %(message)s'
+        format=f'%(asctime)s - %(levelname)s - {"CURSE" if USE_CURSES else "ANSI"} - %(message)s'
     )
 
 
@@ -565,8 +564,7 @@ def find_matches(panes, search_ch):
 def update_hints_display(screen, positions, current_key):
     """Update hint display based on current key sequence"""
     for screen_y, screen_x, pane_right_edge, char, next_char, hint in positions:
-        logging.debug(f'{screen_x} {pane_right_edge} {
-                      char} {next_char} {hint}')
+        logging.debug(f'{screen_x} {pane_right_edge} {char} {next_char} {hint}')
         if hint.startswith(current_key):
             next_x = screen_x + get_char_width(char)
             if next_x < pane_right_edge:
@@ -640,8 +638,7 @@ def main(screen: Screen):
     current_pane = next(p for p in panes if p.active)
     cursor_y = current_pane.start_y + current_pane.cursor_y
     cursor_x = current_pane.start_x + current_pane.cursor_x
-    logging.debug(f"Cursor position: {current_pane.pane_id}, {
-                  cursor_y}, {cursor_x}")
+    logging.debug(f"Cursor position: {current_pane.pane_id}, {cursor_y}, {cursor_x}")
 
     # Replace HintTree with direct hint assignment
     hint_mapping = assign_hints_by_distance(matches, cursor_y, cursor_x)
