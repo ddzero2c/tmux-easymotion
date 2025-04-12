@@ -540,24 +540,17 @@ def find_matches(panes, search_ch):
 
     for pane in panes:
         for line_num, line in enumerate(pane.lines):
-            pos = 0
-            while pos < len(line):
-                found = False
+            # 對每個字符位置檢查所有可能的匹配
+            for pos in range(len(line)):
                 for ch in search_chars:
                     if CASE_SENSITIVE:
-                        idx = line.find(ch, pos)
+                        if pos < len(line) and line[pos] == ch:
+                            visual_col = sum(get_char_width(c) for c in line[:pos])
+                            matches.append((pane, line_num, visual_col))
                     else:
-                        idx = line.lower().find(ch.lower(), pos)
-                    if idx != -1:
-                        visual_col = sum(get_char_width(c) for c in line[:idx])
-                        matches.append((pane, line_num, visual_col))
-                        found = True
-                        pos = idx + 1
-                        break
-                if not found:
-                    #  if no match found, move to next position, consider character width
-                    if pos < len(line):
-                        pos += 1
+                        if pos < len(line) and line[pos].lower() == ch.lower():
+                            visual_col = sum(get_char_width(c) for c in line[:pos])
+                            matches.append((pane, line_num, visual_col))
 
     return matches
 
