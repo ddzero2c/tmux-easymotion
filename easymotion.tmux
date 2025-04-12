@@ -26,7 +26,7 @@ SMARTSIGN=$(get_tmux_option "@easymotion-smartsign" "false")
 tmp_file=$CURRENT_DIR/.keystroke
 # Execute Python script with environment variables
 tmux bind $(get_tmux_option "@easymotion-key" "s") run-shell "\
-	printf '\x03' > $tmp_file && tmux command-prompt -1 -p 'easymotion:' 'run-shell \"printf '%1' > $tmp_file\"' \; \
+	printf '\x03' > $tmp_file && tmux command-prompt -1 -p 'easymotion:' 'run-shell \"printf %s\\\\n \\\"%1\\\" > $tmp_file\"' \; \
 	neww -d '\
 	TMUX_EASYMOTION_HINTS=$HINTS \
     TMUX_EASYMOTION_VERTICAL_BORDER=$VERTICAL_BORDER \
