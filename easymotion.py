@@ -555,7 +555,9 @@ def find_matches(panes, search_ch):
                         pos = idx + 1
                         break
                 if not found:
-                    break
+                    #  if no match found, move to next position, consider character width
+                    if pos < len(line):
+                        pos += 1
 
     return matches
 
@@ -644,21 +646,24 @@ def main(screen: Screen):
     hint_mapping = assign_hints_by_distance(matches, cursor_y, cursor_x)
 
     # Create flat positions list with all needed info
-    positions = [
-        (pane.start_y + line_num,  # screen_y
-         pane.start_x + col,       # screen_x
-         pane.start_x + pane.width,  # pane_right_edge
-         char,                     # original char at hint position
-         # original char at second hint position (if exists)
-         next_char,
-         hint)
-        for hint, (pane, line_num, col) in hint_mapping.items()
-        for char, next_char in [(
-            pane.lines[line_num][col],
-            pane.lines[line_num][col+1] if col +
-            1 < len(pane.lines[line_num]) else ''
-        )]
-    ]
+    positions = []
+    for hint, (pane, line_num, visual_col) in hint_mapping.items():
+        # make sure index is in valid range
+        if line_num < len(pane.lines):
+            line = pane.lines[line_num]
+            #  convert visual column to actual column
+            true_col = get_true_position(line, visual_col)
+            if true_col < len(line):
+                char = line[true_col]
+                next_char = line[true_col+1] if true_col + 1 < len(line) else ''
+                positions.append((
+                    pane.start_y + line_num,  # screen_y
+                    pane.start_x + visual_col,  # screen_x
+                    pane.start_x + pane.width,  # pane_right_edge
+                    char,                     # original char at hint position
+                    next_char,                # original char at second hint position (if exists)
+                    hint
+                ))
 
     terminal_width, terminal_height = get_terminal_size()
     draw_all_panes(panes, max_x, padding_cache, terminal_height, screen)
