@@ -41,7 +41,9 @@ SMARTSIGN_TABLE = {
     ']': '}',
     '`': '~',
     "'": '"',
-    '\\': '|'
+    '\\': '|',
+    ',': '<',
+    '.': '>'
 }
 VERTICAL_BORDER = os.environ.get('TMUX_EASYMOTION_VERTICAL_BORDER', '│')
 HORIZONTAL_BORDER = os.environ.get('TMUX_EASYMOTION_HORIZONTAL_BORDER', '─')
