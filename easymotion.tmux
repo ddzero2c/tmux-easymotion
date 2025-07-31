@@ -23,7 +23,8 @@ PERF=$(get_tmux_option "@easymotion-perf" "false")
 CASE_SENSITIVE=$(get_tmux_option "@easymotion-case-sensitive" "false")
 SMARTSIGN=$(get_tmux_option "@easymotion-smartsign" "false")
 
-tmp_file=$CURRENT_DIR/.keystroke
+tmp_file=$(mktemp -t tmux-easymotion_keystroke-XXXXXXX)
+
 # Execute Python script with environment variables
 tmux bind $(get_tmux_option "@easymotion-key" "s") run-shell "\
 	printf '\x03' > $tmp_file && tmux command-prompt -1 -p 'easymotion:' 'run-shell \"printf %s\\\\n \\\"%1\\\" > $tmp_file\"' \; \
