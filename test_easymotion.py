@@ -1,5 +1,5 @@
 from easymotion import (generate_hints, get_char_width, get_string_width,
-                        get_true_position)
+                        get_true_position, calculate_tab_width)
 
 
 def test_get_char_width():
@@ -9,6 +9,9 @@ def test_get_char_width():
     assert get_char_width('한') == 2  # Korean character (wide)
     assert get_char_width(' ') == 1  # Space
     assert get_char_width('\n') == 1  # Newline
+    assert get_char_width('\t', 0) == 8  # Tab at position 0
+    assert get_char_width('\t', 1) == 7  # Tab at position 1
+    assert get_char_width('\t', 7) == 1  # Tab at position 7
 
 
 def test_get_string_width():
@@ -17,12 +20,23 @@ def test_get_string_width():
     assert get_string_width('hello こんにちは') == 16
     assert get_string_width('') == 0
 
+    # Need to manually calculate tab width examples to match our implementation
+    assert get_string_width('\t') == 8  # Tab at position 0 = 8 spaces
+    assert get_string_width('a\t') == 8  # 'a' (1) + Tab at position 1 (7) = 8
+    assert get_string_width('1234567\t') == 8  # 7 chars + Tab at position 7 (1) = 8
+    assert get_string_width('a\tb\t') == 16  # 'a' (1) + Tab at position 1 (7) + 'b' (1) + Tab at position 9=1 (7) = 16
+
 
 def test_get_true_position():
     assert get_true_position('hello', 3) == 3
     assert get_true_position('あいうえお', 4) == 2
     assert get_true_position('hello あいうえお', 7) == 7
     assert get_true_position('', 5) == 0
+    assert get_true_position('\t', 4) == 1  # Halfway through tab
+    assert get_true_position('\t', 8) == 1  # Full tab width
+    assert get_true_position('a\tb', 1) == 1  # 'a'
+    assert get_true_position('a\tb', 5) == 2  # After 'a', halfway through tab
+    assert get_true_position('a\tb', 9) == 3  # 'b'
 
 
 def test_generate_hints():

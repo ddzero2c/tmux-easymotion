@@ -214,24 +214,38 @@ def perf_timer(func_name=None):
     return decorator
 
 
+def calculate_tab_width(position: int, tab_size: int = 8) -> int:
+    """Calculate the visual width of a tab based on its position"""
+    return tab_size - (position % tab_size)
+
 @functools.lru_cache(maxsize=1024)
-def get_char_width(char: str) -> int:
-    """Get visual width of a single character with caching"""
+def get_char_width(char: str, position: int = 0) -> int:
+    """Get visual width of a single character with caching
+
+    Args:
+        char: The character to measure
+        position: The visual position of the character (needed for tabs)
+    """
+    if char == '\t':
+        return calculate_tab_width(position)
     return 2 if unicodedata.east_asian_width(char) in 'WF' else 1
 
 
 @functools.lru_cache(maxsize=1024)
 def get_string_width(s: str) -> int:
-    """Calculate visual width of string, accounting for double-width characters"""
-    return sum(map(get_char_width, s))
+    """Calculate visual width of string, accounting for double-width characters and tabs"""
+    visual_pos = 0
+    for char in s:
+        visual_pos += get_char_width(char, visual_pos)
+    return visual_pos
 
 
 def get_true_position(line, target_col):
-    """Calculate true position accounting for wide characters"""
+    """Calculate true position accounting for wide characters and tabs"""
     visual_pos = 0
     true_pos = 0
     while true_pos < len(line) and visual_pos < target_col:
-        char_width = get_char_width(line[true_pos])
+        char_width = get_char_width(line[true_pos], visual_pos)
         visual_pos += char_width
         true_pos += 1
     return true_pos
@@ -547,12 +561,18 @@ def find_matches(panes, search_ch):
                 for ch in search_chars:
                     if CASE_SENSITIVE:
                         if pos < len(line) and line[pos] == ch:
-                            visual_col = sum(get_char_width(c) for c in line[:pos])
-                            matches.append((pane, line_num, visual_col))
+                            # Calculate visual position accounting for tab width based on position
+                            visual_pos = 0
+                            for i in range(pos):
+                                visual_pos += get_char_width(line[i], visual_pos)
+                            matches.append((pane, line_num, visual_pos))
                     else:
                         if pos < len(line) and line[pos].lower() == ch.lower():
-                            visual_col = sum(get_char_width(c) for c in line[:pos])
-                            matches.append((pane, line_num, visual_col))
+                            # Calculate visual position accounting for tab width based on position
+                            visual_pos = 0
+                            for i in range(pos):
+                                visual_pos += get_char_width(line[i], visual_pos)
+                            matches.append((pane, line_num, visual_pos))
 
     return matches
 
