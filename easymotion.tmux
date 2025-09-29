@@ -26,10 +26,11 @@ SMARTSIGN=$(get_tmux_option "@easymotion-smartsign" "false")
 tmp_file=$(mktemp -t tmux-easymotion_keystroke-XXXXXXX)
 
 # Execute Python script with environment variables
+HINTS_ESCAPED="${HINTS/;/\";\"}"
 tmux bind $(get_tmux_option "@easymotion-key" "s") run-shell "\
-	printf '\x03' > $tmp_file && tmux command-prompt -1 -p 'easymotion:' 'run-shell \"printf %s\\\\n \\\"%1\\\" > $tmp_file\"' \; \
-	neww -d '\
-	TMUX_EASYMOTION_HINTS=$HINTS \
+    printf '\x03' > $tmp_file && tmux command-prompt -1 -p 'easymotion:' 'run-shell \"printf %s\\\\n \\\"%1\\\" > $tmp_file\"' \; \
+    neww -d '\
+    TMUX_EASYMOTION_HINTS=$HINTS_ESCAPED \
     TMUX_EASYMOTION_VERTICAL_BORDER=$VERTICAL_BORDER \
     TMUX_EASYMOTION_HORIZONTAL_BORDER=$HORIZONTAL_BORDER \
     TMUX_EASYMOTION_USE_CURSES=$USE_CURSES \
