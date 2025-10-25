@@ -70,6 +70,10 @@ bind-key -T copy-mode-vi V send-keys -X select-line;
 ### Run tests
 
 ```bash
+# Install development dependencies
+pip install -r requirements-dev.txt
+
+# Run tests
 pytest test_easymotion.py -v --cache-clear
 ```
 

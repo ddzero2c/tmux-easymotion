@@ -41,6 +41,10 @@ User input flows through a temporary file (created by `mktemp`) to handle the in
 
 ### Running Tests
 ```bash
+# First time: Install development dependencies
+pip install -r requirements-dev.txt
+
+# Run tests
 pytest test_easymotion.py -v --cache-clear
 ```
 
