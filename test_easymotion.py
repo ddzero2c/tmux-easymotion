@@ -59,8 +59,8 @@ def test_generate_hints_no_duplicates():
         double_chars = [h for h in hints if len(h) == 2]
         if double_chars:
             for double_char in double_chars:
-                assert double_char[0] not in single_chars, f"Double char hint {
-                    double_char} starts with single char hint"
+                assert double_char[0] not in single_chars, \
+                    f"Double char hint {double_char} starts with single char hint"
 
             # Check all characters are from the key set
             assert all(c in keys for h in hints for c in h), \
