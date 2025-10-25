@@ -1,5 +1,7 @@
 # TMUX Easymotion
 
+[![Tests](https://github.com/ddzero2c/tmux-easymotion/actions/workflows/test.yml/badge.svg)](https://github.com/ddzero2c/tmux-easymotion/actions/workflows/test.yml)
+
 - Tmux prefix is `Ctrl+q`:
 - Trigger key is `s`
 
@@ -68,6 +70,10 @@ bind-key -T copy-mode-vi V send-keys -X select-line;
 ### Run tests
 
 ```bash
+# Install development dependencies
+pip install -r requirements-dev.txt
+
+# Run tests
 pytest test_easymotion.py -v --cache-clear
 ```
 
