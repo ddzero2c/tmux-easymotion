@@ -1,5 +1,7 @@
 # TMUX Easymotion
 
+[![Tests](https://github.com/ddzero2c/tmux-easymotion/actions/workflows/test.yml/badge.svg)](https://github.com/ddzero2c/tmux-easymotion/actions/workflows/test.yml)
+
 - Tmux prefix is `Ctrl+q`:
 - Trigger key is `s`
 
