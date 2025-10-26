@@ -7,9 +7,11 @@ from easymotion import (
     assign_hints_by_distance,
     find_matches,
     generate_hints,
+    generate_smartsign_patterns,
     get_char_width,
     get_string_width,
     get_true_position,
+    update_hints_display,
 )
 
 
@@ -229,6 +231,182 @@ def test_find_matches_smartsign():
         easymotion.SMARTSIGN = original_smartsign
 
 
+def test_smartsign_key_mappings():
+    """Test smartsign with key number-to-symbol mappings (issue reported: '3' not matching '#')"""
+    import easymotion
+    original_smartsign = easymotion.SMARTSIGN
+
+    try:
+        easymotion.SMARTSIGN = True
+        pane = PaneInfo(
+            pane_id='%1', active=True, start_y=0, height=10, start_x=0, width=80
+        )
+
+        # Test '3' -> '#' mapping (user reported issue)
+        pane.lines = ['test 3# code']
+        matches = find_matches([pane], '3')
+        assert len(matches) == 2  # Should find both '3' and '#'
+
+        # Test '1' -> '!' mapping
+        pane.lines = ['test 1! code']
+        matches = find_matches([pane], '1')
+        assert len(matches) == 2  # Should find both '1' and '!'
+
+        # Test '2' -> '@' mapping
+        pane.lines = ['email 2@ test']
+        matches = find_matches([pane], '2')
+        assert len(matches) == 2  # Should find both '2' and '@'
+
+        # Test '8' -> '*' mapping
+        pane.lines = ['star 8* test']
+        matches = find_matches([pane], '8')
+        assert len(matches) == 2  # Should find both '8' and '*'
+
+    finally:
+        easymotion.SMARTSIGN = original_smartsign
+
+
+def test_smartsign_with_case_insensitive():
+    """Test smartsign combined with case insensitive mode"""
+    import easymotion
+    original_smartsign = easymotion.SMARTSIGN
+    original_case_sensitive = easymotion.CASE_SENSITIVE
+
+    try:
+        easymotion.SMARTSIGN = True
+        easymotion.CASE_SENSITIVE = False
+
+        pane = PaneInfo(
+            pane_id='%1', active=True, start_y=0, height=10, start_x=0, width=80
+        )
+
+        # Smartsign should work with case insensitive mode
+        pane.lines = ['test 3# CODE']
+        matches = find_matches([pane], '3')
+        assert len(matches) == 2  # Should find both '3' and '#'
+
+    finally:
+        easymotion.SMARTSIGN = original_smartsign
+        easymotion.CASE_SENSITIVE = original_case_sensitive
+
+
+def test_smartsign_reverse_search():
+    """Test that searching for symbol itself (not number) works correctly"""
+    import easymotion
+    original_smartsign = easymotion.SMARTSIGN
+
+    try:
+        easymotion.SMARTSIGN = True
+        pane = PaneInfo(
+            pane_id='%1', active=True, start_y=0, height=10, start_x=0, width=80
+        )
+
+        # Searching '#' should only find '#', not '3'
+        # because '#' is not a key in SMARTSIGN_TABLE
+        pane.lines = ['test 3# code']
+        matches = find_matches([pane], '#')
+        assert len(matches) == 1  # Should only find '#'
+
+        # Searching '!' should only find '!'
+        pane.lines = ['test 1! code']
+        matches = find_matches([pane], '!')
+        assert len(matches) == 1  # Should only find '!'
+
+    finally:
+        easymotion.SMARTSIGN = original_smartsign
+
+
+# ============================================================================
+# Tests for Generic Smartsign Pattern Generation
+# ============================================================================
+
+def test_generate_smartsign_patterns_disabled():
+    """Test that pattern generation returns original when SMARTSIGN is disabled"""
+    import easymotion
+    original_smartsign = easymotion.SMARTSIGN
+
+    try:
+        easymotion.SMARTSIGN = False
+
+        # Should return only the original pattern
+        assert generate_smartsign_patterns("3") == ["3"]
+        assert generate_smartsign_patterns("3,") == ["3,"]
+        assert generate_smartsign_patterns("abc") == ["abc"]
+
+    finally:
+        easymotion.SMARTSIGN = original_smartsign
+
+
+def test_generate_smartsign_patterns_1char():
+    """Test 1-character smartsign pattern generation"""
+    import easymotion
+    original_smartsign = easymotion.SMARTSIGN
+
+    try:
+        easymotion.SMARTSIGN = True
+
+        # Character with mapping
+        patterns = generate_smartsign_patterns("3")
+        assert set(patterns) == {"3", "#"}
+
+        # Character without mapping
+        patterns = generate_smartsign_patterns("x")
+        assert patterns == ["x"]
+
+    finally:
+        easymotion.SMARTSIGN = original_smartsign
+
+
+def test_generate_smartsign_patterns_2char():
+    """Test 2-character smartsign pattern generation (all combinations)"""
+    import easymotion
+    original_smartsign = easymotion.SMARTSIGN
+
+    try:
+        easymotion.SMARTSIGN = True
+
+        # Both characters have mappings: '3' -> '#', ',' -> '<'
+        patterns = generate_smartsign_patterns("3,")
+        assert set(patterns) == {"3,", "#,", "3<", "#<"}
+
+        # Only first character has mapping
+        patterns = generate_smartsign_patterns("3x")
+        assert set(patterns) == {"3x", "#x"}
+
+        # Only second character has mapping
+        patterns = generate_smartsign_patterns("x,")
+        assert set(patterns) == {"x,", "x<"}
+
+        # Neither character has mapping
+        patterns = generate_smartsign_patterns("ab")
+        assert patterns == ["ab"]
+
+    finally:
+        easymotion.SMARTSIGN = original_smartsign
+
+
+def test_generate_smartsign_patterns_3char():
+    """Test 3-character pattern generation (verifies extensibility)"""
+    import easymotion
+    original_smartsign = easymotion.SMARTSIGN
+
+    try:
+        easymotion.SMARTSIGN = True
+
+        # All three have mappings: '1' -> '!', '2' -> '@', '3' -> '#'
+        patterns = generate_smartsign_patterns("123")
+        # Should generate 2^3 = 8 combinations
+        expected = {"123", "!23", "1@3", "12#", "!@3", "!2#", "1@#", "!@#"}
+        assert set(patterns) == expected
+
+        # Mixed: first and last have mappings
+        patterns = generate_smartsign_patterns("1x3")
+        assert set(patterns) == {"1x3", "!x3", "1x#", "!x#"}
+
+    finally:
+        easymotion.SMARTSIGN = original_smartsign
+
+
 def test_find_matches_wide_characters(wide_char_pane):
     """Test matching with wide characters and correct visual position"""
     matches = find_matches([wide_char_pane], 'w')
@@ -416,3 +594,293 @@ def test_search_to_hint_integration(simple_pane):
 
         # Verify hint is valid
         assert len(hint) in [1, 2]  # Should be 1 or 2 characters
+
+
+# ============================================================================
+# Tests for 2-Character Search (Issue #6)
+# ============================================================================
+
+def test_find_matches_2char_basic(simple_pane):
+    """Test 2-character search with basic patterns"""
+    simple_pane.lines = ['hello world', 'foo bar baz', 'test line']
+
+    # Search for 'wo'
+    matches = find_matches([simple_pane], 'wo')
+    assert len(matches) >= 1
+    # Should find 'wo' in "world"
+    pane, line_num, visual_col = matches[0]
+    assert line_num == 0
+    true_pos = get_true_position(simple_pane.lines[line_num], visual_col)
+    assert simple_pane.lines[line_num][true_pos:true_pos+2] == 'wo'
+
+
+def test_find_matches_2char_multiple(simple_pane):
+    """Test 2-character search with multiple matches"""
+    simple_pane.lines = ['hello hello', 'test hello']
+
+    # Search for 'he'
+    matches = find_matches([simple_pane], 'he')
+    # Should find 'he' three times
+    assert len(matches) == 3
+
+
+def test_find_matches_2char_case_insensitive(simple_pane):
+    """Test 2-character search with case insensitivity"""
+    import easymotion
+    original_case_sensitive = easymotion.CASE_SENSITIVE
+
+    try:
+        easymotion.CASE_SENSITIVE = False
+        simple_pane.lines = ['Hello HELLO heLLo']
+
+        # Search for 'he' should match 'He', 'HE', 'he'
+        matches = find_matches([simple_pane], 'he')
+        assert len(matches) == 3
+
+        # Search for 'HE' should also match all
+        matches_upper = find_matches([simple_pane], 'HE')
+        assert len(matches_upper) == 3
+
+    finally:
+        easymotion.CASE_SENSITIVE = original_case_sensitive
+
+
+def test_find_matches_2char_wide_characters(wide_char_pane):
+    """Test 2-character search with wide characters"""
+    # Search for 'ld' in "world"
+    matches = find_matches([wide_char_pane], 'ld')
+    assert len(matches) >= 1
+
+
+def test_find_matches_2char_no_match(simple_pane):
+    """Test 2-character search with no matches"""
+    simple_pane.lines = ['hello world']
+
+    # Search for pattern that doesn't exist
+    matches = find_matches([simple_pane], 'xy')
+    assert len(matches) == 0
+
+
+def test_find_matches_2char_partial_match(simple_pane):
+    """Test that partial matches don't count"""
+    simple_pane.lines = ['hello']
+
+    # Search for 'lo' - should find only one match at the end
+    matches = find_matches([simple_pane], 'lo')
+    assert len(matches) == 1
+
+
+def test_s2_smartsign_single_char_mapping():
+    """Test s2 mode with smartsign when only one character has mapping"""
+    import easymotion
+
+    original_smartsign = easymotion.SMARTSIGN
+
+    try:
+        easymotion.SMARTSIGN = True
+
+        pane = PaneInfo('%1', True, 0, 3, 0, 40)
+        pane.lines = ['test 3x and #x code']
+
+        # Search for '3x' should match both '3x' and '#x'
+        matches = find_matches([pane], '3x')
+        assert len(matches) == 2
+
+    finally:
+        easymotion.SMARTSIGN = original_smartsign
+
+
+def test_s2_smartsign_both_chars_mapping():
+    """Test s2 mode with smartsign when both characters have mappings"""
+    import easymotion
+
+    original_smartsign = easymotion.SMARTSIGN
+
+    try:
+        easymotion.SMARTSIGN = True
+
+        pane = PaneInfo('%1', True, 0, 3, 0, 60)
+        # '3' -> '#', ',' -> '<'
+        pane.lines = ['3, #, 3< #< test']
+
+        # Search for '3,' should match all 4 combinations
+        matches = find_matches([pane], '3,')
+        assert len(matches) == 4
+
+    finally:
+        easymotion.SMARTSIGN = original_smartsign
+
+
+def test_s2_smartsign_no_mapping():
+    """Test s2 mode with smartsign when no characters have mappings"""
+    import easymotion
+
+    original_smartsign = easymotion.SMARTSIGN
+
+    try:
+        easymotion.SMARTSIGN = True
+
+        pane = PaneInfo('%1', True, 0, 3, 0, 40)
+        pane.lines = ['test ab and cd code']
+
+        # Search for 'ab' should only match 'ab' (no mappings)
+        matches = find_matches([pane], 'ab')
+        assert len(matches) == 1
+
+    finally:
+        easymotion.SMARTSIGN = original_smartsign
+
+
+def test_s2_smartsign_with_case_insensitive():
+    """Test s2 mode with smartsign + case insensitive combination"""
+    import easymotion
+
+    original_smartsign = easymotion.SMARTSIGN
+    original_case_sensitive = easymotion.CASE_SENSITIVE
+
+    try:
+        easymotion.SMARTSIGN = True
+        easymotion.CASE_SENSITIVE = False
+
+        pane = PaneInfo('%1', True, 0, 3, 0, 40)
+        pane.lines = ['3X #X 3x #x test']
+
+        # Should match all case variations + smartsign variants
+        matches = find_matches([pane], '3x')
+        # Matches: 3X, #X, 3x, #x (4 total)
+        assert len(matches) == 4
+
+    finally:
+        easymotion.SMARTSIGN = original_smartsign
+        easymotion.CASE_SENSITIVE = original_case_sensitive
+
+
+def test_find_matches_2char_at_line_end(simple_pane):
+    """Test 2-character search at end of line"""
+    simple_pane.lines = ['hello']
+
+    # Search for 'lo' at end of line
+    matches = find_matches([simple_pane], 'lo')
+    assert len(matches) == 1
+    pane, line_num, visual_col = matches[0]
+    assert line_num == 0
+    true_pos = get_true_position(simple_pane.lines[line_num], visual_col)
+    assert simple_pane.lines[line_num][true_pos:true_pos+2] == 'lo'
+
+
+# ============================================================================
+# Tests for Line-End Hint Restoration Bug Fix
+# ============================================================================
+
+def test_positions_construction_at_line_end(simple_pane):
+    """Test that positions are correctly constructed when match is at line end"""
+    simple_pane.lines = ['hello']
+
+    # Find match for 'o' at end of line (position 4)
+    matches = find_matches([simple_pane], 'o')
+    assert len(matches) == 1
+
+    pane, line_num, visual_col = matches[0]
+    line = pane.lines[line_num]
+    true_col = get_true_position(line, visual_col)
+
+    # At line end, true_col should be the last character
+    assert true_col == 4  # 'o' is at index 4
+    assert line[true_col] == 'o'
+
+    # next_char should be empty because we're at line end
+    next_char = line[true_col + 1] if true_col + 1 < len(line) else ''
+    assert next_char == ''
+
+    # But next_x should still be within pane bounds (for padding area)
+    next_x = simple_pane.start_x + visual_col + get_char_width('o')
+    pane_right_edge = simple_pane.start_x + simple_pane.width
+    assert next_x < pane_right_edge  # Should be within pane for padding
+
+
+class MockScreen:
+    """Mock Screen class to record addstr calls for testing"""
+
+    # Attribute constants matching real Screen class
+    A_NORMAL = 0
+    A_DIM = 1
+    A_HINT1 = 2
+    A_HINT2 = 3
+
+    def __init__(self):
+        self.calls = []
+        self.refresh_called = False
+
+    def addstr(self, y, x, text, attr=0):
+        """Record all addstr calls"""
+        self.calls.append({
+            'y': y,
+            'x': x,
+            'text': text,
+            'attr': attr
+        })
+
+    def refresh(self):
+        """Record refresh call"""
+        self.refresh_called = True
+
+    def get_calls_at_position(self, x):
+        """Helper to get all calls at a specific x position"""
+        return [call for call in self.calls if call['x'] == x]
+
+
+def test_hint_restoration_at_line_end():
+    """Test that hint at line end is properly restored when first char is pressed"""
+    # Create a pane with line ending at 'o'
+    pane = PaneInfo('%1', True, 0, 1, 0, 20)
+    pane.lines = ['hello']
+
+    # Simulate a two-character hint 'ab' at the last character 'o' (position 4)
+    # screen_y, screen_x, pane_right_edge, char, next_char, hint
+    positions = [
+        (0, 4, 20, 'o', '', 'ab')  # next_char is empty (line end)
+    ]
+
+    # Create mock screen
+    screen = MockScreen()
+
+    # Simulate user pressing first hint character 'a'
+    update_hints_display(screen, positions, 'a')
+
+    # Verify that refresh was called
+    assert screen.refresh_called
+
+    # Get calls at position 5 (next_x = 4 + get_char_width('o') = 5)
+    calls_at_next_pos = screen.get_calls_at_position(5)
+
+    # Should have one call to restore the second position
+    assert len(calls_at_next_pos) == 1
+
+    # The restored character should be a space, not empty string
+    assert calls_at_next_pos[0]['text'] == ' '
+    assert calls_at_next_pos[0]['text'] != ''  # Bug fix: was empty before
+
+
+def test_hint_restoration_not_at_line_end():
+    """Test that hint restoration works correctly when NOT at line end"""
+    # Create a pane
+    pane = PaneInfo('%1', True, 0, 1, 0, 20)
+    pane.lines = ['hello world']
+
+    # Simulate a two-character hint 'ab' at 'e' (position 1), next_char is 'l'
+    positions = [
+        (0, 1, 20, 'e', 'l', 'ab')  # next_char is 'l' (not empty)
+    ]
+
+    # Create mock screen
+    screen = MockScreen()
+
+    # Simulate user pressing first hint character 'a'
+    update_hints_display(screen, positions, 'a')
+
+    # Get calls at position 2 (next_x = 1 + get_char_width('e') = 2)
+    calls_at_next_pos = screen.get_calls_at_position(2)
+
+    # Should restore the actual next character 'l'
+    assert len(calls_at_next_pos) == 1
+    assert calls_at_next_pos[0]['text'] == 'l'

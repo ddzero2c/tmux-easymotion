@@ -68,17 +68,71 @@ Enable performance logging:
 set -g @easymotion-perf 'true'
 ```
 
+## Motion Types
+
+The plugin supports multiple motion types, controlled by the `TMUX_EASYMOTION_MOTION_TYPE` environment variable:
+
+- **s** (default): 1-character search - prompts for a single character and shows hints for all matches
+- **s2**: 2-character search - prompts for two consecutive characters for more precise matching
+
+### Motion Type Implementation
+
+Each motion type is set up via different tmux key bindings in easymotion.tmux:
+
+- **@easymotion-key**: Legacy binding (backward compatible, uses 's' mode)
+- **@easymotion-s**: Explicit 1-char search binding
+- **@easymotion-s2**: 2-char search binding (uses two sequential `command-prompt` calls)
+
+The `main()` function in easymotion.py reads the `MOTION_TYPE` environment variable and:
+1. For 's': reads 1 character from the temp file
+2. For 's2': reads 2 characters from the temp file
+3. Calls `find_matches()` with the search pattern
+
+### 2-Character Search Details
+
+The `find_matches()` function was refactored to support multi-character patterns:
+- Accepts `search_pattern` (1+ characters) instead of `search_ch` (single character)
+- For multi-char patterns, checks substring matches at each position
+- Handles wide character boundaries - skips matches that would split a wide (CJK) character
+- Smartsign applies to **all pattern lengths** via `generate_smartsign_patterns()`
+
+### Smartsign Architecture
+
+**Design Principle**: Smartsign is a **generic transformation layer** that works independently of search mode.
+
+**Key Components**:
+
+1. **`generate_smartsign_patterns(pattern)`**: Generic pattern generator
+   - Works for patterns of **any length** (1-char, 2-char, 3-char, etc.)
+   - Each character position is independently expanded if it has a smartsign mapping
+   - Returns all possible combinations using Cartesian product
+   - Example: `"3,"` → `["3,", "#,", "3<", "#<"]` (4 combinations)
+
+2. **`find_matches(panes, search_pattern)`**: Pattern-agnostic matching engine
+   - Calls `generate_smartsign_patterns()` to get all pattern variants
+   - Performs matching logic once for all variants
+   - No mode-specific smartsign logic needed
+
+3. **Extensibility**: New search modes automatically get smartsign support
+   - Mode determines **what to search** (user input, word boundaries, etc.)
+   - Smartsign determines **how to expand the pattern**
+   - Matching logic is unified
+
+**Performance**: For 2-char search with both chars having mappings, maximum 4 pattern variants. For 3-char, maximum 8 variants. This is acceptable overhead.
+
 ## Configuration Options (tmux.conf)
 
 All options are read from tmux options in easymotion.tmux and passed as environment variables to the Python script:
 
-- `@easymotion-key`: Trigger key binding (default: 's')
+- `@easymotion-key`: Trigger key binding for 1-char search (default: 's', backward compatible)
+- `@easymotion-s`: Explicit 1-char search key binding (optional)
+- `@easymotion-s2`: 2-char search key binding (optional, e.g., 'f')
 - `@easymotion-hints`: Characters used for hints (default: 'asdghklqwertyuiopzxcvbnmfj;')
 - `@easymotion-vertical-border`: Character for vertical borders (default: '│')
 - `@easymotion-horizontal-border`: Character for horizontal borders (default: '─')
 - `@easymotion-use-curses`: Use curses instead of ANSI sequences (default: 'false')
 - `@easymotion-case-sensitive`: Case-sensitive search (default: 'false')
-- `@easymotion-smartsign`: Enable smartsign feature to match shifted symbols (default: 'false')
+- `@easymotion-smartsign`: Enable smartsign feature to match shifted symbols (default: 'false', works with all search modes)
 
 ## Important Implementation Notes
 
