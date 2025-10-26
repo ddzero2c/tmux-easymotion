@@ -2,6 +2,17 @@
 
 [![Tests](https://github.com/ddzero2c/tmux-easymotion/actions/workflows/test.yml/badge.svg)](https://github.com/ddzero2c/tmux-easymotion/actions/workflows/test.yml)
 
+> [!NOTE]
+> **📢 Active Development Notice**
+>
+> I've been receiving feature requests and will be actively adding new features going forward.
+> The master branch may include breaking changes and experimental features.
+>
+> **If you prefer stability, please pin to [v1.0.0](https://github.com/ddzero2c/tmux-easymotion/releases/tag/v1.0.0):**
+> ```bash
+> set -g @plugin 'ddzero2c/tmux-easymotion@v1.0.0'
+> ```
+
 - Tmux prefix is `Ctrl+q`:
 - Trigger key is `s`
 
