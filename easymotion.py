@@ -704,8 +704,10 @@ def main(screen: Screen):
         matches = find_matches(panes, search_pattern)
     elif MOTION_TYPE == 's2':
         # 2 char search
-        search_pattern = getch(sys.argv[1], 2)
-        search_pattern = search_pattern.replace('\n', '').replace('\r', '')
+        raw_input = getch(sys.argv[1], 2)
+        logging.debug(f"Raw input (s2): {repr(raw_input)}")
+        search_pattern = raw_input.replace('\n', '').replace('\r', '')
+        logging.debug(f"Search pattern (s2): {repr(search_pattern)}")
         if not search_pattern:
             return
         matches = find_matches(panes, search_pattern)
