@@ -18,6 +18,7 @@ CASE_SENSITIVE = os.environ.get(
     'TMUX_EASYMOTION_CASE_SENSITIVE', 'false').lower() == 'true'
 SMARTSIGN = os.environ.get(
     'TMUX_EASYMOTION_SMARTSIGN', 'false').lower() == 'true'
+MOTION_TYPE = os.environ.get('TMUX_EASYMOTION_MOTION_TYPE', 's')
 
 # Smartsign mapping table
 SMARTSIGN_TABLE = {
@@ -341,12 +342,12 @@ def get_terminal_size():
     return width, height - 1  # Subtract 1 from height
 
 
-def getch(input_file=None):
-    """Get a single character from terminal or file
+def getch(input_file=None, num_chars=1):
+    """Get character(s) from terminal or file
 
     Args:
         input_file: Optional filename to read from. If None, read from stdin.
-                   File will be deleted after reading if specified.
+        num_chars: Number of characters to read (default: 1)
     """
     if input_file is None:
         # Read from stdin
@@ -354,19 +355,23 @@ def getch(input_file=None):
         old_settings = termios.tcgetattr(fd)
         try:
             tty.setraw(fd)
-            ch = sys.stdin.read(1)
+            ch = sys.stdin.read(num_chars)
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     else:
-        # Read from file and delete it
+        # Read from file
         try:
             with open(input_file, 'r') as f:
-                ch = f.read(1)
+                ch = f.read(num_chars)
         except FileNotFoundError:
-            return '\x03'  # Return Ctrl+C if file not found
+            logging.info("File not found")
+            exit(1)
         except Exception as e:
             logging.error(f"Error reading from file: {str(e)}")
-            return '\x03'
+            exit(1)
+    if ch == '\x03':
+        logging.info("Operation cancelled by user")
+        exit(1)
 
     return ch
 
@@ -530,29 +535,96 @@ def draw_all_panes(panes, max_x, padding_cache, terminal_height, screen):
     screen.refresh()
 
 
-@perf_timer("Finding matches")
-def find_matches(panes, search_ch):
-    """Find all matches and return match list"""
-    matches = []
+def generate_smartsign_patterns(pattern):
+    """Generate all smartsign variants for ANY pattern
 
-    # If smartsign is enabled, add corresponding symbol
-    search_chars = [search_ch]
-    if SMARTSIGN and search_ch in SMARTSIGN_TABLE:
-        search_chars.append(SMARTSIGN_TABLE[search_ch])
+    This is a generic function that works for patterns of any length.
+    Each character position is independently expanded if it has a smartsign mapping.
+    This enables smartsign support for all search modes (s, s2, s3, etc.)
+
+    Args:
+        pattern: String of any length
+
+    Returns:
+        List of pattern variants (includes original pattern)
+
+    Examples:
+        "3" -> ["3", "#"]
+        "3," -> ["3,", "#,", "3<", "#<"]
+        "ab" -> ["ab"]
+        "3x5" -> ["3x5", "#x5", "3x%", "#x%"]  # Future: 3-char support
+    """
+    if not SMARTSIGN:
+        return [pattern]
+
+    import itertools
+
+    # For each character position, collect possible characters
+    char_options = []
+    for ch in pattern:
+        options = [ch]
+        # Add smartsign variant if exists
+        if ch in SMARTSIGN_TABLE:
+            options.append(SMARTSIGN_TABLE[ch])
+        char_options.append(options)
+
+    # Generate all combinations (Cartesian product)
+    patterns = [''.join(combo) for combo in itertools.product(*char_options)]
+    return patterns
+
+
+@perf_timer("Finding matches")
+def find_matches(panes, search_pattern):
+    """Generic pattern matching with smartsign support
+
+    This function is pattern-agnostic - it works for any search pattern,
+    regardless of how that pattern was generated (s, s2, bd-w, etc.)
+    Smartsign is automatically applied via generate_smartsign_patterns().
+
+    Args:
+        panes: List of PaneInfo objects
+        search_pattern: String to search for (1 or more characters)
+    """
+    matches = []
+    pattern_length = len(search_pattern)
+
+    # GENERIC: Apply smartsign transformation (works for any pattern length)
+    search_patterns = generate_smartsign_patterns(search_pattern)
 
     for pane in panes:
         for line_num, line in enumerate(pane.lines):
-            # 對每個字符位置檢查所有可能的匹配
+            # Check each position in the line
             for pos in range(len(line)):
-                for ch in search_chars:
+                # For multi-char search, make sure we have enough characters
+                if pos + pattern_length > len(line):
+                    continue
+
+                # Get substring at current position
+                substring = line[pos:pos + pattern_length]
+
+                # Skip if substring would split a wide character
+                if pattern_length > 1:
+                    # Check if we're in the middle of a wide char
+                    if pos > 0 and get_char_width(line[pos - 1]) == 2:
+                        # Check if previous char's visual position overlaps with current pos
+                        visual_before = sum(get_char_width(c) for c in line[:pos - 1])
+                        visual_at_pos = sum(get_char_width(c) for c in line[:pos])
+                        if visual_at_pos - visual_before == 1:
+                            # We're at the second half of a wide char, skip
+                            continue
+
+                # Check against all search patterns
+                for pattern in search_patterns:
+                    matched = False
                     if CASE_SENSITIVE:
-                        if pos < len(line) and line[pos] == ch:
-                            visual_col = sum(get_char_width(c) for c in line[:pos])
-                            matches.append((pane, line_num, visual_col))
+                        matched = (substring == pattern)
                     else:
-                        if pos < len(line) and line[pos].lower() == ch.lower():
-                            visual_col = sum(get_char_width(c) for c in line[:pos])
-                            matches.append((pane, line_num, visual_col))
+                        matched = (substring.lower() == pattern.lower())
+
+                    if matched:
+                        visual_col = sum(get_char_width(c) for c in line[:pos])
+                        matches.append((pane, line_num, visual_col))
+                        break  # Found match, no need to check other patterns
 
     return matches
 
@@ -565,8 +637,10 @@ def update_hints_display(screen, positions, current_key):
         if hint.startswith(current_key):
             next_x = screen_x + get_char_width(char)
             if next_x < pane_right_edge:
-                logging.debug(f"Restoring next char {next_x} {next_char}")
-                screen.addstr(screen_y, next_x, next_char)
+                # Use space if next_char is empty (end of line case)
+                restore_char = next_char if next_char else ' '
+                logging.debug(f"Restoring next char {next_x} {restore_char}")
+                screen.addstr(screen_y, next_x, restore_char)
         else:
             logging.debug(f"Non-matching hint {screen_x} {screen_y} {char}")
             # Restore original character for non-matching hints
@@ -574,8 +648,10 @@ def update_hints_display(screen, positions, current_key):
             # Always restore second character
             next_x = screen_x + get_char_width(char)
             if next_x < pane_right_edge:
-                logging.debug(f"Restoring next char {next_x} {next_char}")
-                screen.addstr(screen_y, next_x, next_char)
+                # Use space if next_char is empty (end of line case)
+                restore_char = next_char if next_char else ' '
+                logging.debug(f"Restoring next char {next_x} {restore_char}")
+                screen.addstr(screen_y, next_x, restore_char)
             continue
 
         # For matching hints:
@@ -588,7 +664,9 @@ def update_hints_display(screen, positions, current_key):
             screen.addstr(screen_y, screen_x, char)
             next_x = screen_x + get_char_width(char)
             if next_x < pane_right_edge:
-                screen.addstr(screen_y, next_x, next_char)
+                # Use space if next_char is empty (end of line case)
+                restore_char = next_char if next_char else ' '
+                screen.addstr(screen_y, next_x, restore_char)
 
     screen.refresh()
 
@@ -616,11 +694,28 @@ def main(screen: Screen):
     setup_logging()
     panes, max_x, padding_cache = init_panes()
 
-    # Read character from temporary file
-    search_ch = getch(sys.argv[1])
-    if search_ch == '\x03':
-        return
-    matches = find_matches(panes, search_ch)
+    # Determine search mode and find matches
+    if MOTION_TYPE == 's':
+        # 1 char search
+        search_pattern = getch(sys.argv[1], 1)
+        search_pattern = search_pattern.replace('\n', '').replace('\r', '')
+        if not search_pattern:
+            return
+        matches = find_matches(panes, search_pattern)
+    elif MOTION_TYPE == 's2':
+        # 2 char search
+        raw_input = getch(sys.argv[1], 2)
+        logging.debug(f"Raw input (s2): {repr(raw_input)}")
+        search_pattern = raw_input.replace('\n', '').replace('\r', '')
+        logging.debug(f"Search pattern (s2): {repr(search_pattern)}")
+        if not search_pattern:
+            return
+        matches = find_matches(panes, search_pattern)
+    else:
+        logging.error(f"Invalid motion type: {MOTION_TYPE}")
+        exit(1)
+
+    # Check for matches
     if len(matches) == 0:
         sh(['tmux', 'display-message', 'no match'])
         return
