@@ -12,6 +12,7 @@ jobs:
   test:
     name: Test Python ${{ matrix.python-version }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    if: github.head_ref != 'release-please--branches--master'
 
     strategy:
       fail-fast: false
