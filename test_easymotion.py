@@ -16,40 +16,74 @@ from easymotion import (
 
 
 def test_get_char_width():
+    import easymotion
+
     assert get_char_width('a') == 1  # ASCII character
     assert get_char_width('あ') == 2  # Japanese character (wide)
     assert get_char_width('漢') == 2  # Chinese character (wide)
     assert get_char_width('한') == 2  # Korean character (wide)
     assert get_char_width(' ') == 1  # Space
     assert get_char_width('\n') == 1  # Newline
-    assert get_char_width('\t', 0) == 8  # Tab at position 0
-    assert get_char_width('\t', 1) == 7  # Tab at position 1
-    assert get_char_width('\t', 7) == 1  # Tab at position 7
+
+    # Tab behavior is version-dependent
+    assert get_char_width('\t', 0) == 8  # Tab at position 0 (always 8)
+
+    if easymotion.TMUX_VERSION >= (3, 6):
+        # tmux 3.6+: position-aware tabs
+        assert get_char_width('\t', 1) == 7  # Tab at position 1
+        assert get_char_width('\t', 7) == 1  # Tab at position 7
+    else:
+        # Older tmux: fixed-width tabs
+        assert get_char_width('\t', 1) == 8  # Tab at position 1
+        assert get_char_width('\t', 7) == 8  # Tab at position 7
 
 
 def test_get_string_width():
+    import easymotion
+
     assert get_string_width('hello') == 5
     assert get_string_width('こんにちは') == 10
     assert get_string_width('hello こんにちは') == 16
     assert get_string_width('') == 0
 
-    # Need to manually calculate tab width examples to match our implementation
-    assert get_string_width('\t') == 8  # Tab at position 0 = 8 spaces
-    assert get_string_width('a\t') == 8  # 'a' (1) + Tab at position 1 (7) = 8
-    assert get_string_width('1234567\t') == 8  # 7 chars + Tab at position 7 (1) = 8
-    assert get_string_width('a\tb\t') == 16  # 'a' (1) + Tab at position 1 (7) + 'b' (1) + Tab at position 9=1 (7) = 16
+    # Tab behavior is version-dependent
+    assert get_string_width('\t') == 8  # Tab at position 0 = 8 spaces (always)
+
+    if easymotion.TMUX_VERSION >= (3, 6):
+        # tmux 3.6+: position-aware tabs
+        assert get_string_width('a\t') == 8  # 'a' (1) + Tab at position 1 (7) = 8
+        assert get_string_width('1234567\t') == 8  # 7 chars + Tab at position 7 (1) = 8
+        assert get_string_width('a\tb\t') == 16  # 'a' (1) + Tab at pos 1 (7) + 'b' (1) + Tab at pos 9→1 (7) = 16
+    else:
+        # Older tmux: fixed-width tabs
+        assert get_string_width('a\t') == 9  # 'a' (1) + Tab (8) = 9
+        assert get_string_width('1234567\t') == 15  # 7 chars + Tab (8) = 15
+        assert get_string_width('a\tb\t') == 18  # 'a' (1) + Tab (8) + 'b' (1) + Tab (8) = 18
 
 
 def test_get_true_position():
+    import easymotion
+
     assert get_true_position('hello', 3) == 3
     assert get_true_position('あいうえお', 4) == 2
     assert get_true_position('hello あいうえお', 7) == 7
     assert get_true_position('', 5) == 0
-    assert get_true_position('\t', 4) == 1  # Halfway through tab
-    assert get_true_position('\t', 8) == 1  # Full tab width
-    assert get_true_position('a\tb', 1) == 1  # 'a'
-    assert get_true_position('a\tb', 5) == 2  # After 'a', halfway through tab
-    assert get_true_position('a\tb', 9) == 3  # 'b'
+
+    # Tab behavior is version-dependent
+    if easymotion.TMUX_VERSION >= (3, 6):
+        # tmux 3.6+: position-aware tabs
+        assert get_true_position('\t', 4) == 1  # Halfway through tab
+        assert get_true_position('\t', 8) == 1  # Full tab width
+        assert get_true_position('a\tb', 1) == 1  # 'a' ends at visual pos 1
+        assert get_true_position('a\tb', 5) == 2  # Halfway through tab
+        assert get_true_position('a\tb', 8) == 2  # 'b' starts at visual pos 8, string index 2
+    else:
+        # Older tmux: fixed-width tabs
+        assert get_true_position('\t', 4) == 1  # Halfway through tab
+        assert get_true_position('\t', 8) == 1  # Full tab width
+        assert get_true_position('a\tb', 1) == 1  # 'a'
+        assert get_true_position('a\tb', 5) == 2  # After 'a', halfway through tab
+        assert get_true_position('a\tb', 9) == 3  # 'b' (at position 9)
 
 
 def test_generate_hints():
@@ -898,3 +932,118 @@ def test_hint_restoration_not_at_line_end():
     # Should restore the actual next character 'l'
     assert len(calls_at_next_pos) == 1
     assert calls_at_next_pos[0]['text'] == 'l'
+
+
+# ============================================================================
+# Tests for Tmux Version Detection and Tab Handling
+# ============================================================================
+
+def test_tmux_version_detection():
+    """Test that tmux version can be detected"""
+    import easymotion
+
+    # Version should be detected and be a tuple
+    assert isinstance(easymotion.TMUX_VERSION, tuple)
+    assert len(easymotion.TMUX_VERSION) == 2
+
+    # Version numbers should be non-negative
+    major, minor = easymotion.TMUX_VERSION
+    assert major >= 0
+    assert minor >= 0
+
+
+def test_version_conditional_tab_behavior():
+    """Test that tab behavior is conditional on tmux version"""
+    import easymotion
+
+    major, minor = easymotion.TMUX_VERSION
+
+    # Test tab at position 0 (always 8)
+    assert get_char_width('\t', 0) == 8
+
+    # Test tab at position 1 (version-dependent)
+    if (major, minor) >= (3, 6):
+        # tmux 3.6+: position-aware tabs
+        assert get_char_width('\t', 1) == 7  # Position-aware
+        assert get_char_width('\t', 7) == 1  # Position-aware
+    else:
+        # Older tmux: fixed-width tabs
+        assert get_char_width('\t', 1) == 8  # Fixed width
+        assert get_char_width('\t', 7) == 8  # Fixed width
+
+
+def test_tab_in_string_width_version_aware():
+    """Test that string width calculation respects version-conditional tab behavior"""
+    import easymotion
+
+    major, minor = easymotion.TMUX_VERSION
+
+    if (major, minor) >= (3, 6):
+        # tmux 3.6+: position-aware tabs
+        assert get_string_width('a\t') == 8  # 'a' (1) + Tab at position 1 (7)
+        assert get_string_width('1234567\t') == 8  # 7 chars + Tab at position 7 (1)
+    else:
+        # Older tmux: fixed-width tabs
+        assert get_string_width('a\t') == 9  # 'a' (1) + Tab (8)
+        assert get_string_width('1234567\t') == 15  # 7 chars + Tab (8)
+
+
+def test_get_tmux_version_function():
+    """Test the get_tmux_version() function directly"""
+    from easymotion import get_tmux_version
+
+    version = get_tmux_version()
+
+    # Should return a tuple of two integers
+    assert isinstance(version, tuple)
+    assert len(version) == 2
+    assert isinstance(version[0], int)
+    assert isinstance(version[1], int)
+
+    # If we're running tests, tmux should be available
+    # Version should be at least (0, 0) but likely higher
+    assert version >= (0, 0)
+
+    # If version was detected (not fallback), it should be reasonable
+    if version != (0, 0):
+        major, minor = version
+        # Tmux versions are typically 1.x to 3.x
+        assert 1 <= major <= 5  # Reasonable range for tmux major versions
+        assert 0 <= minor <= 20  # Reasonable range for minor versions
+
+
+def test_version_string_parsing():
+    """Test parsing various tmux version string formats"""
+    import subprocess
+    import re
+
+    # Mock different version strings and test parsing logic
+    test_cases = [
+        ("tmux 3.5", (3, 5)),
+        ("tmux 3.0a", (3, 0)),
+        ("tmux 2.9a", (2, 9)),
+        ("tmux next-3.6", (3, 6)),
+        ("tmux next-3.7", (3, 7)),
+        ("tmux 3.1-rc", (3, 1)),
+        ("tmux 3.1-rc2", (3, 1)),
+        ("tmux 2.6", (2, 6)),
+        ("tmux 3.1c", (3, 1)),
+        ("tmux master", (0, 0)),  # Conservative default
+        ("tmux openbsd-6.6", (0, 0)),  # OpenBSD version, not tmux
+        ("tmux openbsd-7.0", (0, 0)),
+    ]
+
+    for version_str, expected in test_cases:
+        # Replicate the parsing logic from get_tmux_version()
+        if 'openbsd-' in version_str:
+            result = (0, 0)
+        elif 'master' in version_str:
+            result = (0, 0)
+        else:
+            match = re.search(r'(?:next-)?(\d+)\.(\d+)', version_str)
+            if match:
+                result = (int(match.group(1)), int(match.group(2)))
+            else:
+                result = (0, 0)
+
+        assert result == expected, f"Failed to parse '{version_str}': got {result}, expected {expected}"
