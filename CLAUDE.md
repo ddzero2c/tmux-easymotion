@@ -125,7 +125,7 @@ The `find_matches()` function was refactored to support multi-character patterns
 All options are read from tmux options in easymotion.tmux and passed as environment variables to the Python script:
 
 - `@easymotion-key`: Trigger key binding for 1-char search (default: 's', backward compatible)
-- `@easymotion-s`: Explicit 1-char search key binding (optional)
+- `@easymotion-s`: Explicit 1-char search binding (optional)
 - `@easymotion-s2`: 2-char search key binding (optional, e.g., 'f')
 - `@easymotion-hints`: Characters used for hints (default: 'asdghklqwertyuiopzxcvbnmfj;')
 - `@easymotion-vertical-border`: Character for vertical borders (default: '│')
