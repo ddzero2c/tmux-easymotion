@@ -13,11 +13,11 @@ tmp_file=$(create_input_file)
 ENV_VARS=$(build_env_vars "s2")
 
 # First prompt: get first character
-tmux command-prompt -1 -p 'easymotion char 1:' \
+tmux command-prompt -1 -p 'Search for 2 characters:' \
     "run-shell \"printf '%1' > $tmp_file\"; \
      set-option -g @_easymotion_tmp_char1 '%1'"
 
 # Second prompt: get second character and launch easymotion
-tmux command-prompt -1 -p 'easymotion char 2: #{@_easymotion_tmp_char1}' \
+tmux command-prompt -1 -p 'Search for 2 characters: #{@_easymotion_tmp_char1}' \
     "run-shell \"printf '%1' >> $tmp_file && echo >> $tmp_file\"; \
      neww -d '$ENV_VARS $CURRENT_DIR/easymotion.py $tmp_file'"
