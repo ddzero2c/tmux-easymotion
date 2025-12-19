@@ -24,13 +24,6 @@ PERF=$(get_tmux_option "@easymotion-perf" "false")
 CASE_SENSITIVE=$(get_tmux_option "@easymotion-case-sensitive" "false")
 SMARTSIGN=$(get_tmux_option "@easymotion-smartsign" "false")
 
-# Create temporary input file with reset character
-create_input_file() {
-    local tmp_file=$(mktemp -t tmux-easymotion_keystroke-XXXXXXX)
-    printf '\x03' > "$tmp_file"
-    echo "$tmp_file"
-}
-
 # Build environment variables string for neww -d
 build_env_vars() {
     local motion_type=$1
