@@ -8,4 +8,4 @@ source "$CURRENT_DIR/common.sh"
 
 # Prompt for single character
 ENV_VARS=$(build_env_vars "s")
-tmux command-prompt -1F -p 'easymotion:' "neww -d '$ENV_VARS $CURRENT_DIR/easymotion.py %1"
+tmux command-prompt -1F -p 'Search for 1 character:' "neww -d '$ENV_VARS $CURRENT_DIR/easymotion.py %1"

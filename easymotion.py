@@ -342,6 +342,16 @@ def get_terminal_size():
     return width, height - 1  # Subtract 1 from height
 
 
+def get_current_window_id():
+    """Return the window_id for the pane running this script"""
+    pane_target = os.environ.get("TMUX_PANE")
+    cmd = ["tmux", "display-message", "-p"]
+    if pane_target:
+        cmd.extend(["-t", pane_target])
+    cmd.append("#{window_id}")
+    return sh(cmd).strip()
+
+
 def getch(input_str=None, num_chars=1):
     """Get character(s) from terminal or file
 
@@ -749,7 +759,8 @@ def main(screen: Screen):
     terminal_width, terminal_height = get_terminal_size()
     draw_all_panes(panes, max_x, padding_cache, terminal_height, screen)
     draw_all_hints(positions, terminal_height, screen)
-    sh(['tmux', 'select-window', '-t', '{end}'])
+    overlay_window_id = get_current_window_id()
+    sh(["tmux", "select-window", "-t", overlay_window_id])
 
     # Handle user input
     key_sequence = ""
