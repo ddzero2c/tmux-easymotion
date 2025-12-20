@@ -6,10 +6,8 @@ CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # Load common configuration and functions
 source "$CURRENT_DIR/common.sh"
 
-# Create temporary input file
-tmp_file=$(create_input_file)
+# Build environment variables
+ENV_VARS_OPTS=$(build_env_vars "s")
 
 # Prompt for single character
-ENV_VARS=$(build_env_vars "s")
-tmux command-prompt -1 -p 'Search for 1 character:' "run-shell \"printf %s\\\\n \\\"%1\\\" > $tmp_file\"; \
-    neww -d '$ENV_VARS $CURRENT_DIR/easymotion.py $tmp_file'"
+tmux command-prompt -1F -p 'Search for 1 character:' "new-window -d $ENV_VARS_OPTS $CURRENT_DIR/easymotion.py \"%%%\""

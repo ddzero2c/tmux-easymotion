@@ -6,18 +6,19 @@ CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # Load common configuration and functions
 source "$CURRENT_DIR/common.sh"
 
-# Create temporary input file
-tmp_file=$(create_input_file)
-
 # Build environment variables
-ENV_VARS=$(build_env_vars "s2")
+ENV_VAR_OPTS=$(build_env_var_opts "s2")
 
 # First prompt: get first character
-tmux command-prompt -1 -p 'Search for 2 characters:' \
-    "run-shell \"printf '%1' > $tmp_file\"; \
-     set-option -g @_easymotion_tmp_char1 '%1'"
+tmux source - <<-EOF
+    command-prompt -1 -p 'Search for 2 characters:' {
+        set-option -g @_easymotion_tmp_char1 "%1"
+    }
+EOF
 
 # Second prompt: get second character and launch easymotion
-tmux command-prompt -1 -p 'Search for 2 characters: #{@_easymotion_tmp_char1}' \
-    "run-shell \"printf '%1' >> $tmp_file && echo >> $tmp_file\"; \
-     neww -d '$ENV_VARS $CURRENT_DIR/easymotion.py $tmp_file'"
+tmux source - <<-EOF
+    command-prompt -1 -p 'Search for 2 characters: #{@_easymotion_tmp_char1}' {
+        run-shell -C "new-window -d $ENV_VAR_OPTS $CURRENT_DIR/easymotion.py \"#{q:@_easymotion_tmp_char1}%%%\""
+    }
+EOF
