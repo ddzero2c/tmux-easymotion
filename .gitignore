@@ -2,3 +2,5 @@
 .env
 __pycache__
 .keystroke
+
+**/.claude/settings.local.json

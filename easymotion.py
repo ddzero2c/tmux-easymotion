@@ -3,6 +3,7 @@ import curses
 import functools
 import logging
 import os
+import re
 import subprocess
 import sys
 import termios
@@ -50,6 +51,52 @@ VERTICAL_BORDER = os.environ.get('TMUX_EASYMOTION_VERTICAL_BORDER', '│')
 HORIZONTAL_BORDER = os.environ.get('TMUX_EASYMOTION_HORIZONTAL_BORDER', '─')
 USE_CURSES = os.environ.get(
     'TMUX_EASYMOTION_USE_CURSES', 'false').lower() == 'true'
+
+
+def get_tmux_version():
+    """Detect tmux version for compatibility adjustments
+
+    Returns:
+        tuple: (major, minor) version numbers, e.g., (3, 6) for "tmux 3.6"
+               Returns (0, 0) if detection fails or version is ambiguous
+
+    Handles various version formats:
+        - "tmux 3.5" → (3, 5)
+        - "tmux 3.0a" → (3, 0)
+        - "tmux next-3.6" → (3, 6)
+        - "tmux 3.1-rc2" → (3, 1)
+        - "tmux master" → (0, 0) - assume latest features, use conservative defaults
+        - "tmux openbsd-6.6" → (0, 0) - OpenBSD version, not tmux version
+    """
+    try:
+        result = subprocess.run(
+            ['tmux', '-V'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        version_str = result.stdout.strip()
+
+        # Skip OpenBSD-specific versioning (not actual tmux version)
+        if 'openbsd-' in version_str:
+            return (0, 0)
+
+        # Handle "tmux master" - development version, use conservative defaults
+        if 'master' in version_str:
+            return (0, 0)
+
+        # Extract version: matches "3.6", "next-3.6", "3.0a", "3.1-rc2"
+        # Pattern: find digits.digits anywhere in string, but avoid matching openbsd versions
+        match = re.search(r'(?:next-)?(\d+)\.(\d+)', version_str)
+        if match:
+            return (int(match.group(1)), int(match.group(2)))
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+        pass
+    return (0, 0)  # Default to oldest behavior if detection fails
+
+
+# Detect tmux version at module load time
+TMUX_VERSION = get_tmux_version()
 
 
 class Screen(ABC):
@@ -215,24 +262,48 @@ def perf_timer(func_name=None):
     return decorator
 
 
+def calculate_tab_width(position: int, tab_size: int = 8) -> int:
+    """Calculate the visual width of a tab based on its position"""
+    return tab_size - (position % tab_size)
+
 @functools.lru_cache(maxsize=1024)
-def get_char_width(char: str) -> int:
-    """Get visual width of a single character with caching"""
+def get_char_width(char: str, position: int = 0) -> int:
+    """Get visual width of a single character with caching
+
+    Args:
+        char: The character to measure
+        position: The visual position of the character (needed for tabs)
+
+    Note:
+        Tab handling differs by tmux version:
+        - tmux >= 3.6: Position-aware tabs (tab stops at multiples of 8)
+        - tmux < 3.6: Fixed-width tabs (always 8 spaces)
+    """
+    if char == '\t':
+        # tmux 3.6+ uses position-aware tab rendering (correct terminal behavior)
+        # Older versions render tabs as fixed 8-space width
+        if TMUX_VERSION >= (3, 6):
+            return calculate_tab_width(position)
+        else:
+            return 8  # Fixed width for older tmux versions
     return 2 if unicodedata.east_asian_width(char) in 'WF' else 1
 
 
 @functools.lru_cache(maxsize=1024)
 def get_string_width(s: str) -> int:
-    """Calculate visual width of string, accounting for double-width characters"""
-    return sum(map(get_char_width, s))
+    """Calculate visual width of string, accounting for double-width characters and tabs"""
+    visual_pos = 0
+    for char in s:
+        visual_pos += get_char_width(char, visual_pos)
+    return visual_pos
 
 
 def get_true_position(line, target_col):
-    """Calculate true position accounting for wide characters"""
+    """Calculate true position accounting for wide characters and tabs"""
     visual_pos = 0
     true_pos = 0
     while true_pos < len(line) and visual_pos < target_col:
-        char_width = get_char_width(line[true_pos])
+        char_width = get_char_width(line[true_pos], visual_pos)
         visual_pos += char_width
         true_pos += 1
     return true_pos
