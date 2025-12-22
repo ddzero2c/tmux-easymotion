@@ -884,3 +884,104 @@ def test_hint_restoration_not_at_line_end():
     # Should restore the actual next character 'l'
     assert len(calls_at_next_pos) == 1
     assert calls_at_next_pos[0]['text'] == 'l'
+
+
+# =============================================================================
+# Bash Script Validation Tests
+# =============================================================================
+
+import re
+import subprocess
+from pathlib import Path
+
+
+def get_script_dir():
+    """Get the directory containing the bash scripts"""
+    return Path(__file__).parent
+
+
+def test_bash_scripts_syntax():
+    """Verify all bash scripts have valid syntax"""
+    script_dir = get_script_dir()
+    scripts = ['common.sh', 'mode-s.sh', 'mode-s2.sh', 'easymotion.tmux']
+
+    for script_name in scripts:
+        script_path = script_dir / script_name
+        if script_path.exists():
+            result = subprocess.run(
+                ['bash', '-n', str(script_path)],
+                capture_output=True,
+                text=True
+            )
+            assert result.returncode == 0, \
+                f"Syntax error in {script_name}: {result.stderr}"
+
+
+def test_mode_scripts_use_defined_functions():
+    """Verify mode scripts only call functions defined in common.sh
+
+    This test catches issues like mode-s.sh calling 'build_env_vars'
+    when the function was renamed to 'build_env_var_opts' in common.sh.
+    """
+    script_dir = get_script_dir()
+
+    # Extract function definitions from common.sh
+    common_sh = (script_dir / 'common.sh').read_text()
+    defined_functions = set(re.findall(r'^(\w+)\s*\(\)\s*\{', common_sh, re.MULTILINE))
+
+    # Scripts that source common.sh and may call its functions
+    mode_scripts = ['mode-s.sh', 'mode-s2.sh']
+
+    for script_name in mode_scripts:
+        script_path = script_dir / script_name
+        if not script_path.exists():
+            continue
+
+        script_content = script_path.read_text()
+
+        # Find all function calls that look like: $(function_name ...)
+        # This pattern matches $( followed by a word (function name)
+        called_functions = set(re.findall(r'\$\((\w+)\s', script_content))
+
+        # Filter to only functions that should be defined in common.sh
+        # (exclude built-in commands and external utilities)
+        builtins_and_externals = {
+            'cd', 'dirname', 'pwd', 'echo', 'printf', 'cat', 'mktemp',
+        }
+
+        # Functions that start with 'build_' or 'create_' are likely from common.sh
+        custom_functions = {f for f in called_functions
+                           if f.startswith(('build_', 'create_', 'get_tmux'))}
+
+        for func in custom_functions:
+            assert func in defined_functions, \
+                f"Script '{script_name}' calls undefined function '{func}'. " \
+                f"Available functions in common.sh: {defined_functions}"
+
+
+def test_mode_s_uses_run_shell_c():
+    """Verify mode-s.sh uses 'run-shell -C' for proper command parsing
+
+    When environment variables contain escaped quotes, tmux needs
+    'run-shell -C' to properly parse the new-window command.
+    This is how mode-s2.sh handles it, and mode-s.sh should do the same.
+    """
+    script_dir = get_script_dir()
+    mode_s_content = (script_dir / 'mode-s.sh').read_text()
+
+    # Check that new-window is wrapped in run-shell -C
+    # The pattern should be: run-shell -C "new-window -d ...
+    assert 'run-shell -C' in mode_s_content, \
+        "mode-s.sh should use 'run-shell -C' to properly parse " \
+        "environment variables with escaped quotes"
+
+    # Ensure we're not using bare new-window without run-shell -C
+    # Look for patterns like: "new-window -d $ENV but NOT inside run-shell -C
+    lines = mode_s_content.split('\n')
+    for line in lines:
+        if 'new-window -d' in line and 'run-shell -C' not in line:
+            # Allow comments
+            if line.strip().startswith('#'):
+                continue
+            assert False, \
+                f"mode-s.sh has 'new-window -d' without 'run-shell -C': {line}"
