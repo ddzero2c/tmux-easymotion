@@ -24,23 +24,16 @@ PERF=$(get_tmux_option "@easymotion-perf" "false")
 CASE_SENSITIVE=$(get_tmux_option "@easymotion-case-sensitive" "false")
 SMARTSIGN=$(get_tmux_option "@easymotion-smartsign" "false")
 
-# Create temporary input file with reset character
-create_input_file() {
-    local tmp_file=$(mktemp -t tmux-easymotion_keystroke-XXXXXXX)
-    printf '\x03' > "$tmp_file"
-    echo "$tmp_file"
-}
-
-# Build environment variables string for neww -d
-build_env_vars() {
+# Build environment variables options string for neww -d
+build_env_var_opts() {
     local motion_type=$1
-    echo "TMUX_EASYMOTION_HINTS=\"$HINTS\" \
-TMUX_EASYMOTION_VERTICAL_BORDER=\"$VERTICAL_BORDER\" \
-TMUX_EASYMOTION_HORIZONTAL_BORDER=\"$HORIZONTAL_BORDER\" \
-TMUX_EASYMOTION_USE_CURSES=\"$USE_CURSES\" \
-TMUX_EASYMOTION_DEBUG=\"$DEBUG\" \
-TMUX_EASYMOTION_PERF=\"$PERF\" \
-TMUX_EASYMOTION_CASE_SENSITIVE=\"$CASE_SENSITIVE\" \
-TMUX_EASYMOTION_SMARTSIGN=\"$SMARTSIGN\" \
-TMUX_EASYMOTION_MOTION_TYPE=\"$motion_type\""
+    echo "-e TMUX_EASYMOTION_HINTS=\\\"$HINTS\\\" \
+-e TMUX_EASYMOTION_VERTICAL_BORDER=\\\"$VERTICAL_BORDER\\\" \
+-e TMUX_EASYMOTION_HORIZONTAL_BORDER=\\\"$HORIZONTAL_BORDER\\\" \
+-e TMUX_EASYMOTION_USE_CURSES=\\\"$USE_CURSES\\\" \
+-e TMUX_EASYMOTION_DEBUG=\\\"$DEBUG\\\" \
+-e TMUX_EASYMOTION_PERF=\\\"$PERF\\\" \
+-e TMUX_EASYMOTION_CASE_SENSITIVE=\\\"$CASE_SENSITIVE\\\" \
+-e TMUX_EASYMOTION_SMARTSIGN=\\\"$SMARTSIGN\\\" \
+-e TMUX_EASYMOTION_MOTION_TYPE=\\\"$motion_type\\\""
 }

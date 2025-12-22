@@ -352,14 +352,14 @@ def get_current_window_id():
     return sh(cmd).strip()
 
 
-def getch(input_file=None, num_chars=1):
+def getch(input_str=None, num_chars=1):
     """Get character(s) from terminal or file
 
     Args:
-        input_file: Optional filename to read from. If None, read from stdin.
+        input_str: Optional string. If None, read from stdin.
         num_chars: Number of characters to read (default: 1)
     """
-    if input_file is None:
+    if input_str is None:
         # Read from stdin
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
@@ -369,16 +369,7 @@ def getch(input_file=None, num_chars=1):
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     else:
-        # Read from file
-        try:
-            with open(input_file, 'r') as f:
-                ch = f.read(num_chars)
-        except FileNotFoundError:
-            logging.info("File not found")
-            exit(1)
-        except Exception as e:
-            logging.error(f"Error reading from file: {str(e)}")
-            exit(1)
+        ch = input_str[:num_chars]
     if ch == '\x03':
         logging.info("Operation cancelled by user")
         exit(1)
