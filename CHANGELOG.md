@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/ddzero2c/tmux-easymotion/compare/v1.0.0...v1.1.0) (2025-12-19)
+
+
+### Features
+
+* easymotion-s2 mode ([#11](https://github.com/ddzero2c/tmux-easymotion/issues/11)) ([5937bbd](https://github.com/ddzero2c/tmux-easymotion/commit/5937bbd59e303538effbf4560bddfb534a2543de))
+
 ## 1.0.0 (2025-10-26)
 
 
