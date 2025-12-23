@@ -9,6 +9,7 @@ import pytest
 from easymotion import (
     Config,
     PaneInfo,
+    _get_all_tmux_options,
     assign_hints_by_distance,
     find_matches,
     generate_hints,
@@ -1049,6 +1050,9 @@ def test_cross_pane_jump(tmux_server):
 @requires_tmux
 def test_get_tmux_option_reads_value(tmux_server):
     """Integration test: verify get_tmux_option reads tmux options correctly."""
+    # Clear cache to ensure fresh read
+    _get_all_tmux_options.cache_clear()
+
     # Set a custom tmux option
     test_value = f"test_hints_{uuid.uuid4().hex[:8]}"
     subprocess.run([
@@ -1060,7 +1064,7 @@ def test_get_tmux_option_reads_value(tmux_server):
     original_run = subprocess.run
 
     def patched_run(cmd, *args, **kwargs):
-        if cmd[0] == 'tmux' and 'show-option' in cmd:
+        if cmd[0] == 'tmux' and 'show-options' in cmd:
             # Add server flag to the command
             new_cmd = ['tmux', '-L', tmux_server.server_name] + cmd[1:]
             return original_run(new_cmd, *args, **kwargs)
@@ -1075,6 +1079,9 @@ def test_get_tmux_option_reads_value(tmux_server):
 @requires_tmux
 def test_get_tmux_option_returns_default(tmux_server):
     """Integration test: verify get_tmux_option returns default when option not set."""
+    # Clear cache to ensure fresh read
+    _get_all_tmux_options.cache_clear()
+
     # Use an option name that definitely doesn't exist
     nonexistent_option = f"@easymotion-nonexistent-{uuid.uuid4().hex}"
     default_value = "my_default_value"
@@ -1083,7 +1090,7 @@ def test_get_tmux_option_returns_default(tmux_server):
     original_run = subprocess.run
 
     def patched_run(cmd, *args, **kwargs):
-        if cmd[0] == 'tmux' and 'show-option' in cmd:
+        if cmd[0] == 'tmux' and 'show-options' in cmd:
             new_cmd = ['tmux', '-L', tmux_server.server_name] + cmd[1:]
             return original_run(new_cmd, *args, **kwargs)
         return original_run(cmd, *args, **kwargs)
@@ -1097,6 +1104,9 @@ def test_get_tmux_option_returns_default(tmux_server):
 @requires_tmux
 def test_config_from_tmux(tmux_server):
     """Integration test: verify Config.from_tmux() reads all options correctly."""
+    # Clear cache to ensure fresh read
+    _get_all_tmux_options.cache_clear()
+
     # Set custom tmux options
     subprocess.run([
         'tmux', '-L', tmux_server.server_name,
@@ -1115,7 +1125,7 @@ def test_config_from_tmux(tmux_server):
     original_run = subprocess.run
 
     def patched_run(cmd, *args, **kwargs):
-        if cmd[0] == 'tmux' and 'show-option' in cmd:
+        if cmd[0] == 'tmux' and 'show-options' in cmd:
             new_cmd = ['tmux', '-L', tmux_server.server_name] + cmd[1:]
             return original_run(new_cmd, *args, **kwargs)
         return original_run(cmd, *args, **kwargs)

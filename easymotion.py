@@ -15,20 +15,29 @@ from dataclasses import dataclass, field, fields
 from typing import List, Optional
 
 
-@functools.lru_cache(maxsize=32)
-def get_tmux_option(option: str, default: str) -> str:
-    """Get tmux option value, falling back to default if not set."""
+@functools.lru_cache(maxsize=1)
+def _get_all_tmux_options() -> dict:
+    """Batch read all tmux options in one subprocess call."""
     try:
         result = subprocess.run(
-            ['tmux', 'show-option', '-gqv', option],
+            ['tmux', 'show-options', '-g'],
             capture_output=True,
             text=True,
             check=False
         )
-        value = result.stdout.strip()
-        return value if value else default
+        options = {}
+        for line in result.stdout.strip().split('\n'):
+            if ' ' in line:
+                key, value = line.split(' ', 1)
+                options[key] = value.strip('"')
+        return options
     except Exception:
-        return default
+        return {}
+
+
+def get_tmux_option(option: str, default: str) -> str:
+    """Get tmux option value, falling back to default if not set."""
+    return _get_all_tmux_options().get(option, default)
 
 
 @dataclass
