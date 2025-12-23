@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from easymotion import (
+    Config,
     PaneInfo,
     assign_hints_by_distance,
     find_matches,
@@ -14,6 +15,7 @@ from easymotion import (
     generate_smartsign_patterns,
     get_char_width,
     get_string_width,
+    get_tmux_option,
     get_true_position,
     tmux_move_cursor,
     update_hints_display,
@@ -188,137 +190,90 @@ def test_find_matches_basic(simple_pane, search_char, expected_min_count):
 
 def test_find_matches_case_insensitive(simple_pane):
     """Test case-insensitive matching (default behavior)"""
-    # Mock the CASE_SENSITIVE environment variable
-    import easymotion
-    original_case_sensitive = easymotion.CASE_SENSITIVE
+    # Add a line with uppercase
+    simple_pane.lines = ['Hello World']
 
-    try:
-        easymotion.CASE_SENSITIVE = False
+    # With case_sensitive=False, should match both 'h' and 'H'
+    matches_lower = find_matches([simple_pane], 'h', case_sensitive=False)
+    matches_upper = find_matches([simple_pane], 'H', case_sensitive=False)
 
-        # Add a line with uppercase
-        simple_pane.lines = ['Hello World']
-
-        # Should match both 'h' and 'H'
-        matches_lower = find_matches([simple_pane], 'h')
-        matches_upper = find_matches([simple_pane], 'H')
-
-        # Both should find the 'H' in "Hello"
-        assert len(matches_lower) >= 1
-        assert len(matches_upper) >= 1
-
-    finally:
-        easymotion.CASE_SENSITIVE = original_case_sensitive
+    # Both should find the 'H' in "Hello"
+    assert len(matches_lower) >= 1
+    assert len(matches_upper) >= 1
 
 
 def test_find_matches_smartsign():
     """Test SMARTSIGN feature - searching ',' also finds '<'"""
-    import easymotion
-    original_smartsign = easymotion.SMARTSIGN
+    pane = PaneInfo(
+        pane_id='%1', active=True, start_y=0, height=10, start_x=0, width=80
+    )
+    pane.lines = ['hello, world < test']
 
-    try:
-        pane = PaneInfo(
-            pane_id='%1', active=True, start_y=0, height=10, start_x=0, width=80
-        )
-        pane.lines = ['hello, world < test']
+    # With smartsign enabled, searching ',' should also find '<'
+    matches = find_matches([pane], ',', smartsign=True)
+    # Should find both ',' and '<'
+    assert len(matches) >= 2
 
-        # With SMARTSIGN enabled, searching ',' should also find '<'
-        easymotion.SMARTSIGN = True
-        matches = find_matches([pane], ',')
-        # Should find both ',' and '<'
-        assert len(matches) >= 2
-
-        # Without SMARTSIGN, should only find ','
-        easymotion.SMARTSIGN = False
-        matches = find_matches([pane], ',')
-        assert len(matches) == 1
-
-    finally:
-        easymotion.SMARTSIGN = original_smartsign
+    # Without smartsign, should only find ','
+    matches = find_matches([pane], ',', smartsign=False)
+    assert len(matches) == 1
 
 
 def test_smartsign_key_mappings():
     """Test smartsign with key number-to-symbol mappings (issue reported: '3' not matching '#')"""
-    import easymotion
-    original_smartsign = easymotion.SMARTSIGN
+    pane = PaneInfo(
+        pane_id='%1', active=True, start_y=0, height=10, start_x=0, width=80
+    )
 
-    try:
-        easymotion.SMARTSIGN = True
-        pane = PaneInfo(
-            pane_id='%1', active=True, start_y=0, height=10, start_x=0, width=80
-        )
+    # Test '3' -> '#' mapping (user reported issue)
+    pane.lines = ['test 3# code']
+    matches = find_matches([pane], '3', smartsign=True)
+    assert len(matches) == 2  # Should find both '3' and '#'
 
-        # Test '3' -> '#' mapping (user reported issue)
-        pane.lines = ['test 3# code']
-        matches = find_matches([pane], '3')
-        assert len(matches) == 2  # Should find both '3' and '#'
+    # Test '1' -> '!' mapping
+    pane.lines = ['test 1! code']
+    matches = find_matches([pane], '1', smartsign=True)
+    assert len(matches) == 2  # Should find both '1' and '!'
 
-        # Test '1' -> '!' mapping
-        pane.lines = ['test 1! code']
-        matches = find_matches([pane], '1')
-        assert len(matches) == 2  # Should find both '1' and '!'
+    # Test '2' -> '@' mapping
+    pane.lines = ['email 2@ test']
+    matches = find_matches([pane], '2', smartsign=True)
+    assert len(matches) == 2  # Should find both '2' and '@'
 
-        # Test '2' -> '@' mapping
-        pane.lines = ['email 2@ test']
-        matches = find_matches([pane], '2')
-        assert len(matches) == 2  # Should find both '2' and '@'
-
-        # Test '8' -> '*' mapping
-        pane.lines = ['star 8* test']
-        matches = find_matches([pane], '8')
-        assert len(matches) == 2  # Should find both '8' and '*'
-
-    finally:
-        easymotion.SMARTSIGN = original_smartsign
+    # Test '8' -> '*' mapping
+    pane.lines = ['star 8* test']
+    matches = find_matches([pane], '8', smartsign=True)
+    assert len(matches) == 2  # Should find both '8' and '*'
 
 
 def test_smartsign_with_case_insensitive():
     """Test smartsign combined with case insensitive mode"""
-    import easymotion
-    original_smartsign = easymotion.SMARTSIGN
-    original_case_sensitive = easymotion.CASE_SENSITIVE
+    pane = PaneInfo(
+        pane_id='%1', active=True, start_y=0, height=10, start_x=0, width=80
+    )
 
-    try:
-        easymotion.SMARTSIGN = True
-        easymotion.CASE_SENSITIVE = False
-
-        pane = PaneInfo(
-            pane_id='%1', active=True, start_y=0, height=10, start_x=0, width=80
-        )
-
-        # Smartsign should work with case insensitive mode
-        pane.lines = ['test 3# CODE']
-        matches = find_matches([pane], '3')
-        assert len(matches) == 2  # Should find both '3' and '#'
-
-    finally:
-        easymotion.SMARTSIGN = original_smartsign
-        easymotion.CASE_SENSITIVE = original_case_sensitive
+    # Smartsign should work with case insensitive mode
+    pane.lines = ['test 3# CODE']
+    matches = find_matches([pane], '3', case_sensitive=False, smartsign=True)
+    assert len(matches) == 2  # Should find both '3' and '#'
 
 
 def test_smartsign_reverse_search():
     """Test that searching for symbol itself (not number) works correctly"""
-    import easymotion
-    original_smartsign = easymotion.SMARTSIGN
+    pane = PaneInfo(
+        pane_id='%1', active=True, start_y=0, height=10, start_x=0, width=80
+    )
 
-    try:
-        easymotion.SMARTSIGN = True
-        pane = PaneInfo(
-            pane_id='%1', active=True, start_y=0, height=10, start_x=0, width=80
-        )
+    # Searching '#' should only find '#', not '3'
+    # because '#' is not a key in SMARTSIGN_TABLE
+    pane.lines = ['test 3# code']
+    matches = find_matches([pane], '#', smartsign=True)
+    assert len(matches) == 1  # Should only find '#'
 
-        # Searching '#' should only find '#', not '3'
-        # because '#' is not a key in SMARTSIGN_TABLE
-        pane.lines = ['test 3# code']
-        matches = find_matches([pane], '#')
-        assert len(matches) == 1  # Should only find '#'
-
-        # Searching '!' should only find '!'
-        pane.lines = ['test 1! code']
-        matches = find_matches([pane], '!')
-        assert len(matches) == 1  # Should only find '!'
-
-    finally:
-        easymotion.SMARTSIGN = original_smartsign
+    # Searching '!' should only find '!'
+    pane.lines = ['test 1! code']
+    matches = find_matches([pane], '!', smartsign=True)
+    assert len(matches) == 1  # Should only find '!'
 
 
 # ============================================================================
@@ -326,90 +281,54 @@ def test_smartsign_reverse_search():
 # ============================================================================
 
 def test_generate_smartsign_patterns_disabled():
-    """Test that pattern generation returns original when SMARTSIGN is disabled"""
-    import easymotion
-    original_smartsign = easymotion.SMARTSIGN
-
-    try:
-        easymotion.SMARTSIGN = False
-
-        # Should return only the original pattern
-        assert generate_smartsign_patterns("3") == ["3"]
-        assert generate_smartsign_patterns("3,") == ["3,"]
-        assert generate_smartsign_patterns("abc") == ["abc"]
-
-    finally:
-        easymotion.SMARTSIGN = original_smartsign
+    """Test that pattern generation returns original when smartsign is disabled"""
+    # Should return only the original pattern
+    assert generate_smartsign_patterns("3", smartsign=False) == ["3"]
+    assert generate_smartsign_patterns("3,", smartsign=False) == ["3,"]
+    assert generate_smartsign_patterns("abc", smartsign=False) == ["abc"]
 
 
 def test_generate_smartsign_patterns_1char():
     """Test 1-character smartsign pattern generation"""
-    import easymotion
-    original_smartsign = easymotion.SMARTSIGN
+    # Character with mapping
+    patterns = generate_smartsign_patterns("3", smartsign=True)
+    assert set(patterns) == {"3", "#"}
 
-    try:
-        easymotion.SMARTSIGN = True
-
-        # Character with mapping
-        patterns = generate_smartsign_patterns("3")
-        assert set(patterns) == {"3", "#"}
-
-        # Character without mapping
-        patterns = generate_smartsign_patterns("x")
-        assert patterns == ["x"]
-
-    finally:
-        easymotion.SMARTSIGN = original_smartsign
+    # Character without mapping
+    patterns = generate_smartsign_patterns("x", smartsign=True)
+    assert patterns == ["x"]
 
 
 def test_generate_smartsign_patterns_2char():
     """Test 2-character smartsign pattern generation (all combinations)"""
-    import easymotion
-    original_smartsign = easymotion.SMARTSIGN
+    # Both characters have mappings: '3' -> '#', ',' -> '<'
+    patterns = generate_smartsign_patterns("3,", smartsign=True)
+    assert set(patterns) == {"3,", "#,", "3<", "#<"}
 
-    try:
-        easymotion.SMARTSIGN = True
+    # Only first character has mapping
+    patterns = generate_smartsign_patterns("3x", smartsign=True)
+    assert set(patterns) == {"3x", "#x"}
 
-        # Both characters have mappings: '3' -> '#', ',' -> '<'
-        patterns = generate_smartsign_patterns("3,")
-        assert set(patterns) == {"3,", "#,", "3<", "#<"}
+    # Only second character has mapping
+    patterns = generate_smartsign_patterns("x,", smartsign=True)
+    assert set(patterns) == {"x,", "x<"}
 
-        # Only first character has mapping
-        patterns = generate_smartsign_patterns("3x")
-        assert set(patterns) == {"3x", "#x"}
-
-        # Only second character has mapping
-        patterns = generate_smartsign_patterns("x,")
-        assert set(patterns) == {"x,", "x<"}
-
-        # Neither character has mapping
-        patterns = generate_smartsign_patterns("ab")
-        assert patterns == ["ab"]
-
-    finally:
-        easymotion.SMARTSIGN = original_smartsign
+    # Neither character has mapping
+    patterns = generate_smartsign_patterns("ab", smartsign=True)
+    assert patterns == ["ab"]
 
 
 def test_generate_smartsign_patterns_3char():
     """Test 3-character pattern generation (verifies extensibility)"""
-    import easymotion
-    original_smartsign = easymotion.SMARTSIGN
+    # All three have mappings: '1' -> '!', '2' -> '@', '3' -> '#'
+    patterns = generate_smartsign_patterns("123", smartsign=True)
+    # Should generate 2^3 = 8 combinations
+    expected = {"123", "!23", "1@3", "12#", "!@3", "!2#", "1@#", "!@#"}
+    assert set(patterns) == expected
 
-    try:
-        easymotion.SMARTSIGN = True
-
-        # All three have mappings: '1' -> '!', '2' -> '@', '3' -> '#'
-        patterns = generate_smartsign_patterns("123")
-        # Should generate 2^3 = 8 combinations
-        expected = {"123", "!23", "1@3", "12#", "!@3", "!2#", "1@#", "!@#"}
-        assert set(patterns) == expected
-
-        # Mixed: first and last have mappings
-        patterns = generate_smartsign_patterns("1x3")
-        assert set(patterns) == {"1x3", "!x3", "1x#", "!x#"}
-
-    finally:
-        easymotion.SMARTSIGN = original_smartsign
+    # Mixed: first and last have mappings
+    patterns = generate_smartsign_patterns("1x3", smartsign=True)
+    assert set(patterns) == {"1x3", "!x3", "1x#", "!x#"}
 
 
 def test_find_matches_wide_characters(wide_char_pane):
@@ -498,23 +417,15 @@ def test_assign_hints_by_distance_priority():
     ]
 
     # Cursor at (0, 0)
-    import easymotion
-    original_hints = easymotion.HINTS
+    hint_mapping = assign_hints_by_distance(matches, cursor_y=0, cursor_x=0, hints_keys='abc')
 
-    try:
-        easymotion.HINTS = 'abc'
-        hint_mapping = assign_hints_by_distance(matches, cursor_y=0, cursor_x=0)
+    # Find hint for closest match
+    closest_match = (pane, 0, 2)
+    closest_hint = [k for k, v in hint_mapping.items() if v == closest_match][0]
 
-        # Find hint for closest match
-        closest_match = (pane, 0, 2)
-        closest_hint = [k for k, v in hint_mapping.items() if v == closest_match][0]
-
-        # Closest match should get shortest hint
-        all_hint_lengths = [len(h) for h in hint_mapping.keys()]
-        assert len(closest_hint) == min(all_hint_lengths)
-
-    finally:
-        easymotion.HINTS = original_hints
+    # Closest match should get shortest hint
+    all_hint_lengths = [len(h) for h in hint_mapping.keys()]
+    assert len(closest_hint) == min(all_hint_lengths)
 
 
 def test_assign_hints_by_distance_multi_pane(multi_pane):
@@ -631,23 +542,15 @@ def test_find_matches_2char_multiple(simple_pane):
 
 def test_find_matches_2char_case_insensitive(simple_pane):
     """Test 2-character search with case insensitivity"""
-    import easymotion
-    original_case_sensitive = easymotion.CASE_SENSITIVE
+    simple_pane.lines = ['Hello HELLO heLLo']
 
-    try:
-        easymotion.CASE_SENSITIVE = False
-        simple_pane.lines = ['Hello HELLO heLLo']
+    # Search for 'he' should match 'He', 'HE', 'he'
+    matches = find_matches([simple_pane], 'he', case_sensitive=False)
+    assert len(matches) == 3
 
-        # Search for 'he' should match 'He', 'HE', 'he'
-        matches = find_matches([simple_pane], 'he')
-        assert len(matches) == 3
-
-        # Search for 'HE' should also match all
-        matches_upper = find_matches([simple_pane], 'HE')
-        assert len(matches_upper) == 3
-
-    finally:
-        easymotion.CASE_SENSITIVE = original_case_sensitive
+    # Search for 'HE' should also match all
+    matches_upper = find_matches([simple_pane], 'HE', case_sensitive=False)
+    assert len(matches_upper) == 3
 
 
 def test_find_matches_2char_wide_characters(wide_char_pane):
@@ -677,87 +580,44 @@ def test_find_matches_2char_partial_match(simple_pane):
 
 def test_s2_smartsign_single_char_mapping():
     """Test s2 mode with smartsign when only one character has mapping"""
-    import easymotion
+    pane = PaneInfo('%1', True, 0, 3, 0, 40)
+    pane.lines = ['test 3x and #x code']
 
-    original_smartsign = easymotion.SMARTSIGN
-
-    try:
-        easymotion.SMARTSIGN = True
-
-        pane = PaneInfo('%1', True, 0, 3, 0, 40)
-        pane.lines = ['test 3x and #x code']
-
-        # Search for '3x' should match both '3x' and '#x'
-        matches = find_matches([pane], '3x')
-        assert len(matches) == 2
-
-    finally:
-        easymotion.SMARTSIGN = original_smartsign
+    # Search for '3x' should match both '3x' and '#x'
+    matches = find_matches([pane], '3x', smartsign=True)
+    assert len(matches) == 2
 
 
 def test_s2_smartsign_both_chars_mapping():
     """Test s2 mode with smartsign when both characters have mappings"""
-    import easymotion
+    pane = PaneInfo('%1', True, 0, 3, 0, 60)
+    # '3' -> '#', ',' -> '<'
+    pane.lines = ['3, #, 3< #< test']
 
-    original_smartsign = easymotion.SMARTSIGN
-
-    try:
-        easymotion.SMARTSIGN = True
-
-        pane = PaneInfo('%1', True, 0, 3, 0, 60)
-        # '3' -> '#', ',' -> '<'
-        pane.lines = ['3, #, 3< #< test']
-
-        # Search for '3,' should match all 4 combinations
-        matches = find_matches([pane], '3,')
-        assert len(matches) == 4
-
-    finally:
-        easymotion.SMARTSIGN = original_smartsign
+    # Search for '3,' should match all 4 combinations
+    matches = find_matches([pane], '3,', smartsign=True)
+    assert len(matches) == 4
 
 
 def test_s2_smartsign_no_mapping():
     """Test s2 mode with smartsign when no characters have mappings"""
-    import easymotion
+    pane = PaneInfo('%1', True, 0, 3, 0, 40)
+    pane.lines = ['test ab and cd code']
 
-    original_smartsign = easymotion.SMARTSIGN
-
-    try:
-        easymotion.SMARTSIGN = True
-
-        pane = PaneInfo('%1', True, 0, 3, 0, 40)
-        pane.lines = ['test ab and cd code']
-
-        # Search for 'ab' should only match 'ab' (no mappings)
-        matches = find_matches([pane], 'ab')
-        assert len(matches) == 1
-
-    finally:
-        easymotion.SMARTSIGN = original_smartsign
+    # Search for 'ab' should only match 'ab' (no mappings)
+    matches = find_matches([pane], 'ab', smartsign=True)
+    assert len(matches) == 1
 
 
 def test_s2_smartsign_with_case_insensitive():
     """Test s2 mode with smartsign + case insensitive combination"""
-    import easymotion
+    pane = PaneInfo('%1', True, 0, 3, 0, 40)
+    pane.lines = ['3X #X 3x #x test']
 
-    original_smartsign = easymotion.SMARTSIGN
-    original_case_sensitive = easymotion.CASE_SENSITIVE
-
-    try:
-        easymotion.SMARTSIGN = True
-        easymotion.CASE_SENSITIVE = False
-
-        pane = PaneInfo('%1', True, 0, 3, 0, 40)
-        pane.lines = ['3X #X 3x #x test']
-
-        # Should match all case variations + smartsign variants
-        matches = find_matches([pane], '3x')
-        # Matches: 3X, #X, 3x, #x (4 total)
-        assert len(matches) == 4
-
-    finally:
-        easymotion.SMARTSIGN = original_smartsign
-        easymotion.CASE_SENSITIVE = original_case_sensitive
+    # Should match all case variations + smartsign variants
+    matches = find_matches([pane], '3x', case_sensitive=False, smartsign=True)
+    # Matches: 3X, #X, 3x, #x (4 total)
+    assert len(matches) == 4
 
 
 def test_find_matches_2char_at_line_end(simple_pane):
@@ -1097,87 +957,6 @@ def test_cursor_jump_on_wrapped_line(tmux_server):
 
 
 # =============================================================================
-# Integration Tests for Bash Script Environment Variables (Commit 15ea1f2)
-# =============================================================================
-
-def get_script_dir():
-    """Get the directory containing the bash scripts"""
-    from pathlib import Path
-    return Path(__file__).parent
-
-
-@requires_tmux
-def test_build_env_var_opts_output(tmux_server):
-    """Integration test: verify build_env_var_opts generates correct -e flags.
-
-    This tests the fix from commit 15ea1f2 where mode-s.sh was calling
-    the wrong function name (build_env_vars instead of build_env_var_opts).
-    """
-    script_dir = get_script_dir()
-
-    # Set a custom tmux option
-    subprocess.run([
-        'tmux', '-L', tmux_server.server_name,
-        'set-option', '-g', '@easymotion-hints', 'xyz'
-    ])
-
-    # Run build_env_var_opts via bash and capture output
-    result = subprocess.run(
-        ['bash', '-c', f'source "{script_dir}/common.sh" && build_env_var_opts s'],
-        capture_output=True,
-        text=True,
-        env={**os.environ, 'TMUX': f'/tmp/tmux-test/{tmux_server.server_name}'}
-    )
-
-    output = result.stdout + result.stderr
-
-    # Verify the function exists and produces output with -e flags
-    assert result.returncode == 0 or 'TMUX_EASYMOTION' in output, \
-        f"build_env_var_opts failed: {result.stderr}"
-
-    # If we got output, verify it contains expected env var names
-    if output:
-        assert 'TMUX_EASYMOTION_MOTION_TYPE' in output or '-e' in output, \
-            f"build_env_var_opts output missing expected flags: {output}"
-
-
-@requires_tmux
-def test_env_vars_pass_through_tmux_new_window(tmux_server):
-    """Integration test: verify env vars pass through tmux new-window -e.
-
-    This tests that the run-shell -C wrapper (added in commit 15ea1f2)
-    correctly passes environment variables to subprocesses.
-    """
-    test_var = "TEST_EASYMOTION_VALUE"
-    test_value = "integration_test_123"
-    output_file = f'/tmp/tmux_env_test_{tmux_server.server_name}'
-
-    # Use shell variable syntax with proper escaping
-    # The $TEST_EASYMOTION_VALUE will be expanded by the shell in new-window
-    cmd = f'new-window -d -e {test_var}="{test_value}" "echo \\${test_var} > {output_file}"'
-
-    result = subprocess.run([
-        'tmux', '-L', tmux_server.server_name,
-        'run-shell', '-C', cmd
-    ], capture_output=True, text=True)
-
-    time.sleep(0.3)  # Wait for command to execute
-
-    # Check if the file was created with the correct value
-    try:
-        with open(output_file, 'r') as f:
-            content = f.read().strip()
-        os.unlink(output_file)
-
-        assert content == test_value, \
-            f"Env var not passed correctly. Expected '{test_value}', got '{content}'"
-    except FileNotFoundError:
-        # The file might not exist if the command didn't run
-        # This is acceptable in some test environments
-        pytest.skip("Could not verify env var passing (temp file not created)")
-
-
-# =============================================================================
 # Integration Tests - Cross-Pane Jump (Core Feature)
 # =============================================================================
 
@@ -1261,3 +1040,89 @@ def test_cross_pane_jump(tmux_server):
     assert cursor_x == target_col, (
         f"Cursor X position wrong: expected {target_col}, got {cursor_x}"
     )
+
+
+# =============================================================================
+# Integration Tests - get_tmux_option and Config
+# =============================================================================
+
+@requires_tmux
+def test_get_tmux_option_reads_value(tmux_server):
+    """Integration test: verify get_tmux_option reads tmux options correctly."""
+    # Set a custom tmux option
+    test_value = f"test_hints_{uuid.uuid4().hex[:8]}"
+    subprocess.run([
+        'tmux', '-L', tmux_server.server_name,
+        'set-option', '-g', '@easymotion-test-option', test_value
+    ], check=True)
+
+    # Patch subprocess.run to use our test server
+    original_run = subprocess.run
+
+    def patched_run(cmd, *args, **kwargs):
+        if cmd[0] == 'tmux' and 'show-option' in cmd:
+            # Add server flag to the command
+            new_cmd = ['tmux', '-L', tmux_server.server_name] + cmd[1:]
+            return original_run(new_cmd, *args, **kwargs)
+        return original_run(cmd, *args, **kwargs)
+
+    with patch('subprocess.run', patched_run):
+        result = get_tmux_option('@easymotion-test-option', 'default')
+
+    assert result == test_value, f"Expected '{test_value}', got '{result}'"
+
+
+@requires_tmux
+def test_get_tmux_option_returns_default(tmux_server):
+    """Integration test: verify get_tmux_option returns default when option not set."""
+    # Use an option name that definitely doesn't exist
+    nonexistent_option = f"@easymotion-nonexistent-{uuid.uuid4().hex}"
+    default_value = "my_default_value"
+
+    # Patch subprocess.run to use our test server
+    original_run = subprocess.run
+
+    def patched_run(cmd, *args, **kwargs):
+        if cmd[0] == 'tmux' and 'show-option' in cmd:
+            new_cmd = ['tmux', '-L', tmux_server.server_name] + cmd[1:]
+            return original_run(new_cmd, *args, **kwargs)
+        return original_run(cmd, *args, **kwargs)
+
+    with patch('subprocess.run', patched_run):
+        result = get_tmux_option(nonexistent_option, default_value)
+
+    assert result == default_value, f"Expected default '{default_value}', got '{result}'"
+
+
+@requires_tmux
+def test_config_from_tmux(tmux_server):
+    """Integration test: verify Config.from_tmux() reads all options correctly."""
+    # Set custom tmux options
+    subprocess.run([
+        'tmux', '-L', tmux_server.server_name,
+        'set-option', '-g', '@easymotion-hints', 'xyz'
+    ], check=True)
+    subprocess.run([
+        'tmux', '-L', tmux_server.server_name,
+        'set-option', '-g', '@easymotion-case-sensitive', 'true'
+    ], check=True)
+    subprocess.run([
+        'tmux', '-L', tmux_server.server_name,
+        'set-option', '-g', '@easymotion-smartsign', 'true'
+    ], check=True)
+
+    # Patch subprocess.run to use our test server
+    original_run = subprocess.run
+
+    def patched_run(cmd, *args, **kwargs):
+        if cmd[0] == 'tmux' and 'show-option' in cmd:
+            new_cmd = ['tmux', '-L', tmux_server.server_name] + cmd[1:]
+            return original_run(new_cmd, *args, **kwargs)
+        return original_run(cmd, *args, **kwargs)
+
+    with patch('subprocess.run', patched_run):
+        config = Config.from_tmux()
+
+    assert config.hints == 'xyz', f"Expected hints='xyz', got '{config.hints}'"
+    assert config.case_sensitive is True, f"Expected case_sensitive=True, got {config.case_sensitive}"
+    assert config.smartsign is True, f"Expected smartsign=True, got {config.smartsign}"

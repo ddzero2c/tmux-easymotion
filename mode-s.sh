@@ -3,11 +3,5 @@
 # Get the directory where this script is located
 CURRENT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-# Load common configuration and functions
-source "$CURRENT_DIR/common.sh"
-
-# Build environment variables
-ENV_VARS_OPTS=$(build_env_var_opts "s")
-
-# Prompt for single character
-tmux command-prompt -1F -p 'Search for 1 character:' "run-shell -C \"new-window -d $ENV_VARS_OPTS $CURRENT_DIR/easymotion.py \\\"%%%\\\"\""
+# Prompt for single character and launch easymotion
+tmux command-prompt -1F -p 'Search for 1 character:' "run-shell -C \"new-window -d $CURRENT_DIR/easymotion.py s \\\"%%%\\\"\""

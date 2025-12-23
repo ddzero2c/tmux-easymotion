@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import curses
 import functools
+import itertools
 import logging
 import os
 import subprocess
@@ -10,47 +11,44 @@ import time
 import tty
 import unicodedata
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field, fields
 from typing import List, Optional
 
-# Configuration from environment
-HINTS = os.environ.get('TMUX_EASYMOTION_HINTS', 'asdghklqwertyuiopzxcvbnmfj;')
-CASE_SENSITIVE = os.environ.get(
-    'TMUX_EASYMOTION_CASE_SENSITIVE', 'false').lower() == 'true'
-SMARTSIGN = os.environ.get(
-    'TMUX_EASYMOTION_SMARTSIGN', 'false').lower() == 'true'
-MOTION_TYPE = os.environ.get('TMUX_EASYMOTION_MOTION_TYPE', 's')
 
-# Smartsign mapping table
-SMARTSIGN_TABLE = {
-    ',': '<',
-    '.': '>',
-    '/': '?',
-    '1': '!',
-    '2': '@',
-    '3': '#',
-    '4': '$',
-    '5': '%',
-    '6': '^',
-    '7': '&',
-    '8': '*',
-    '9': '(',
-    '0': ')',
-    '-': '_',
-    '=': '+',
-    ';': ':',
-    '[': '{',
-    ']': '}',
-    '`': '~',
-    "'": '"',
-    '\\': '|',
-    ',': '<',
-    '.': '>'
-}
-VERTICAL_BORDER = os.environ.get('TMUX_EASYMOTION_VERTICAL_BORDER', '│')
-HORIZONTAL_BORDER = os.environ.get('TMUX_EASYMOTION_HORIZONTAL_BORDER', '─')
-USE_CURSES = os.environ.get(
-    'TMUX_EASYMOTION_USE_CURSES', 'false').lower() == 'true'
+def get_tmux_option(option: str, default: str) -> str:
+    """Get tmux option value, falling back to default if not set."""
+    try:
+        result = subprocess.run(
+            ['tmux', 'show-option', '-gqv', option],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        value = result.stdout.strip()
+        return value if value else default
+    except Exception:
+        return default
 
+
+@dataclass
+class Config:
+    """Configuration for easymotion."""
+    hints: str = field(default='asdghklqwertyuiopzxcvbnmfj;', metadata={'opt': '@easymotion-hints'})
+    case_sensitive: bool = field(default=False, metadata={'opt': '@easymotion-case-sensitive'})
+    smartsign: bool = field(default=False, metadata={'opt': '@easymotion-smartsign'})
+    vertical_border: str = field(default='│', metadata={'opt': '@easymotion-vertical-border'})
+    horizontal_border: str = field(default='─', metadata={'opt': '@easymotion-horizontal-border'})
+    use_curses: bool = field(default=False, metadata={'opt': '@easymotion-use-curses'})
+
+    @classmethod
+    def from_tmux(cls) -> 'Config':
+        """Load configuration from tmux options."""
+        kwargs = {}
+        for f in fields(cls):
+            default_str = str(f.default).lower() if f.type is bool else f.default
+            raw = get_tmux_option(f.metadata['opt'], default_str)
+            kwargs[f.name] = raw.lower() == 'true' if f.type is bool else raw
+        return cls(**kwargs)
 
 class Screen(ABC):
     # Common attributes for both implementations
@@ -179,12 +177,12 @@ class Curses(Screen):
         self.stdscr.clear()
 
 
-def setup_logging():
-    """Initialize logging configuration based on environment variables"""
-    debug_mode = os.environ.get('TMUX_EASYMOTION_DEBUG') == 'true'
-    perf_mode = os.environ.get('TMUX_EASYMOTION_PERF') == 'true'
+def setup_logging(use_curses: bool = False):
+    """Initialize logging configuration based on tmux options"""
+    debug = get_tmux_option('@easymotion-debug', 'false').lower() == 'true'
+    perf = get_tmux_option('@easymotion-perf', 'false').lower() == 'true'
 
-    if not (debug_mode or perf_mode):
+    if not (debug or perf):
         logging.getLogger().disabled = True
         return
 
@@ -192,16 +190,17 @@ def setup_logging():
     logging.basicConfig(
         filename=log_file,
         level=logging.DEBUG,
-        format=f'%(asctime)s - %(levelname)s - {"CURSE" if USE_CURSES else "ANSI"} - %(message)s'
+        format=f'%(asctime)s - %(levelname)s - {"CURSE" if use_curses else "ANSI"} - %(message)s'
     )
 
 
 def perf_timer(func_name=None):
-    """Performance timing decorator that only logs when TMUX_EASYMOTION_PERF is true"""
+    """Performance timing decorator that only logs when perf is enabled"""
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            if os.environ.get('TMUX_EASYMOTION_PERF') != 'true':
+            perf = get_tmux_option('@easymotion-perf', 'false').lower() == 'true'
+            if not perf:
                 return func(*args, **kwargs)
 
             name = func_name or func.__name__
@@ -240,8 +239,6 @@ def get_true_position(line, target_col):
 
 def sh(cmd: list) -> str:
     """Execute shell command with optional logging"""
-    debug_mode = os.environ.get('TMUX_EASYMOTION_DEBUG') == 'true'
-
     try:
         result = subprocess.run(
             cmd,
@@ -251,15 +248,13 @@ def sh(cmd: list) -> str:
             check=True
         ).stdout
 
-        if debug_mode:
-            logging.debug(f"Command: {cmd}")
-            logging.debug(f"Result: {result}")
-            logging.debug("-" * 40)
+        logging.debug(f"Command: {cmd}")
+        logging.debug(f"Result: {result}")
+        logging.debug("-" * 40)
 
         return result
     except subprocess.CalledProcessError as e:
-        if debug_mode:
-            logging.error(f"Error executing {cmd}: {str(e)}")
+        logging.error(f"Error executing {cmd}: {str(e)}")
         raise
 
 
@@ -419,7 +414,7 @@ def tmux_move_cursor(pane, line_num, true_col):
         sh(cmd)
 
 
-def assign_hints_by_distance(matches, cursor_y, cursor_x):
+def assign_hints_by_distance(matches, cursor_y, cursor_x, hints_keys: str = 'asdghklqwertyuiopzxcvbnmfj;'):
     """Sort matches by distance and assign hints"""
     # Calculate distances and sort
     matches_with_dist = []
@@ -431,7 +426,7 @@ def assign_hints_by_distance(matches, cursor_y, cursor_x):
     matches_with_dist.sort(key=lambda x: x[0])  # Sort by distance
 
     # Generate hints and create mapping
-    hints = generate_hints(HINTS, len(matches_with_dist))
+    hints = generate_hints(hints_keys, len(matches_with_dist))
     logging.debug(f'{hints}')
     return {hint: match for (_, match), hint in zip(matches_with_dist, hints)}
 
@@ -491,9 +486,6 @@ def init_panes():
     # Batch get all pane info
     panes_info = get_initial_tmux_info()
 
-    # Initialize empty padding cache - will be populated as needed
-    padding_cache = {}
-
     # Optimize pane processing with list comprehension
     for pane in panes_info:
         # Only capture pane content when really needed
@@ -506,7 +498,8 @@ def init_panes():
 
 
 @perf_timer()
-def draw_all_panes(panes, max_x, padding_cache, terminal_height, screen):
+def draw_all_panes(panes, max_x, padding_cache, terminal_height, screen,
+                   vertical_border: str = '│', horizontal_border: str = '─'):
     """Draw all panes and their borders"""
     sorted_panes = sorted(panes, key=lambda p: p.start_y + p.height)
 
@@ -527,18 +520,28 @@ def draw_all_panes(panes, max_x, padding_cache, terminal_height, screen):
         if pane.start_x + pane.width < max_x:
             for y in range(pane.start_y, pane.start_y + visible_height):
                 screen.addstr(y, pane.start_x + pane.width,
-                              VERTICAL_BORDER, screen.A_DIM)
+                              vertical_border, screen.A_DIM)
 
         # Draw horizontal borders
         end_y = pane.start_y + visible_height
         if end_y < terminal_height and pane != sorted_panes[-1]:
-            screen.addstr(end_y, pane.start_x, HORIZONTAL_BORDER *
+            screen.addstr(end_y, pane.start_x, horizontal_border *
                           pane.width, screen.A_DIM)
 
     screen.refresh()
 
 
-def generate_smartsign_patterns(pattern):
+def generate_smartsign_patterns(
+    pattern,
+    smartsign: bool = False,
+    _table: dict = {
+        ',': '<', '.': '>', '/': '?',
+        '1': '!', '2': '@', '3': '#', '4': '$', '5': '%',
+        '6': '^', '7': '&', '8': '*', '9': '(', '0': ')',
+        '-': '_', '=': '+', ';': ':', '[': '{', ']': '}',
+        '`': '~', "'": '"', '\\': '|',
+    }
+):
     """Generate all smartsign variants for ANY pattern
 
     This is a generic function that works for patterns of any length.
@@ -547,6 +550,7 @@ def generate_smartsign_patterns(pattern):
 
     Args:
         pattern: String of any length
+        smartsign: Whether smartsign feature is enabled
 
     Returns:
         List of pattern variants (includes original pattern)
@@ -557,18 +561,16 @@ def generate_smartsign_patterns(pattern):
         "ab" -> ["ab"]
         "3x5" -> ["3x5", "#x5", "3x%", "#x%"]  # Future: 3-char support
     """
-    if not SMARTSIGN:
+    if not smartsign:
         return [pattern]
-
-    import itertools
 
     # For each character position, collect possible characters
     char_options = []
     for ch in pattern:
         options = [ch]
         # Add smartsign variant if exists
-        if ch in SMARTSIGN_TABLE:
-            options.append(SMARTSIGN_TABLE[ch])
+        if ch in _table:
+            options.append(_table[ch])
         char_options.append(options)
 
     # Generate all combinations (Cartesian product)
@@ -577,7 +579,7 @@ def generate_smartsign_patterns(pattern):
 
 
 @perf_timer("Finding matches")
-def find_matches(panes, search_pattern):
+def find_matches(panes, search_pattern, case_sensitive: bool = False, smartsign: bool = False):
     """Generic pattern matching with smartsign support
 
     This function is pattern-agnostic - it works for any search pattern,
@@ -587,12 +589,14 @@ def find_matches(panes, search_pattern):
     Args:
         panes: List of PaneInfo objects
         search_pattern: String to search for (1 or more characters)
+        case_sensitive: Whether to match case-sensitively
+        smartsign: Whether to enable smartsign matching
     """
     matches = []
     pattern_length = len(search_pattern)
 
     # GENERIC: Apply smartsign transformation (works for any pattern length)
-    search_patterns = generate_smartsign_patterns(search_pattern)
+    search_patterns = generate_smartsign_patterns(search_pattern, smartsign)
 
     for pane in panes:
         for line_num, line in enumerate(pane.lines):
@@ -619,7 +623,7 @@ def find_matches(panes, search_pattern):
                 # Check against all search patterns
                 for pattern in search_patterns:
                     matched = False
-                    if CASE_SENSITIVE:
+                    if case_sensitive:
                         matched = (substring == pattern)
                     else:
                         matched = (substring.lower() == pattern.lower())
@@ -693,29 +697,36 @@ def draw_all_hints(positions, terminal_height, screen):
 
 
 @perf_timer("Total execution")
-def main(screen: Screen):
-    setup_logging()
+def main(screen: Screen, config: Config):
+    setup_logging(config.use_curses)
     panes, max_x, padding_cache = init_panes()
 
+    # Get motion type from command line argument
+    motion_type = sys.argv[1] if len(sys.argv) > 1 else 's'
+
     # Determine search mode and find matches
-    if MOTION_TYPE == 's':
+    if motion_type == 's':
         # 1 char search
-        search_pattern = getch(sys.argv[1], 1)
+        search_pattern = getch(sys.argv[2], 1)
         search_pattern = search_pattern.replace('\n', '').replace('\r', '')
         if not search_pattern:
             return
-        matches = find_matches(panes, search_pattern)
-    elif MOTION_TYPE == 's2':
+        matches = find_matches(panes, search_pattern,
+                               case_sensitive=config.case_sensitive,
+                               smartsign=config.smartsign)
+    elif motion_type == 's2':
         # 2 char search
-        raw_input = getch(sys.argv[1], 2)
+        raw_input = getch(sys.argv[2], 2)
         logging.debug(f"Raw input (s2): {repr(raw_input)}")
         search_pattern = raw_input.replace('\n', '').replace('\r', '')
         logging.debug(f"Search pattern (s2): {repr(search_pattern)}")
         if not search_pattern:
             return
-        matches = find_matches(panes, search_pattern)
+        matches = find_matches(panes, search_pattern,
+                               case_sensitive=config.case_sensitive,
+                               smartsign=config.smartsign)
     else:
-        logging.error(f"Invalid motion type: {MOTION_TYPE}")
+        logging.error(f"Invalid motion type: {motion_type}")
         exit(1)
 
     # Check for matches
@@ -736,7 +747,7 @@ def main(screen: Screen):
     logging.debug(f"Cursor position: {current_pane.pane_id}, {cursor_y}, {cursor_x}")
 
     # Replace HintTree with direct hint assignment
-    hint_mapping = assign_hints_by_distance(matches, cursor_y, cursor_x)
+    hint_mapping = assign_hints_by_distance(matches, cursor_y, cursor_x, config.hints)
 
     # Create flat positions list with all needed info
     positions = []
@@ -759,7 +770,8 @@ def main(screen: Screen):
                 ))
 
     terminal_width, terminal_height = get_terminal_size()
-    draw_all_panes(panes, max_x, padding_cache, terminal_height, screen)
+    draw_all_panes(panes, max_x, padding_cache, terminal_height, screen,
+                   config.vertical_border, config.horizontal_border)
     draw_all_hints(positions, terminal_height, screen)
     overlay_window_id = get_current_window_id()
     sh(["tmux", "select-window", "-t", overlay_window_id])
@@ -768,7 +780,7 @@ def main(screen: Screen):
     key_sequence = ""
     while True:
         ch = getch()
-        if ch not in HINTS:
+        if ch not in config.hints:
             return
 
         key_sequence += ch
@@ -787,10 +799,11 @@ def main(screen: Screen):
 
 
 if __name__ == '__main__':
-    screen: Screen = Curses() if USE_CURSES else AnsiSequence()
+    config = Config.from_tmux()
+    screen: Screen = Curses() if config.use_curses else AnsiSequence()
     screen.init()
     try:
-        main(screen)
+        main(screen, config)
     except KeyboardInterrupt:
         logging.info("Operation cancelled by user")
     except Exception as e:
