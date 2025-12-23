@@ -1,4 +1,3 @@
-import os
 import subprocess
 import time
 import uuid
@@ -1044,8 +1043,6 @@ def test_cross_pane_jump(tmux_server):
 
     This tests the core cross-pane feature: jumping from pane 1 to pane 2.
     """
-    pane1_id = tmux_server.pane_id
-
     # Create pane 2 with vertical split (stacked)
     pane2_id = tmux_server.split_window(horizontal=False)
     time.sleep(0.2)

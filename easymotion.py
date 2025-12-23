@@ -12,7 +12,7 @@ import tty
 import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, fields
-from typing import Any, List, Optional, Union
+from typing import Any, List, Optional
 
 
 @functools.lru_cache(maxsize=1)
