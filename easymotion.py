@@ -15,6 +15,7 @@ from dataclasses import dataclass, field, fields
 from typing import List, Optional
 
 
+@functools.lru_cache(maxsize=32)
 def get_tmux_option(option: str, default: str) -> str:
     """Get tmux option value, falling back to default if not set."""
     try:
@@ -49,6 +50,7 @@ class Config:
             raw = get_tmux_option(f.metadata['opt'], default_str)
             kwargs[f.name] = raw.lower() == 'true' if f.type is bool else raw
         return cls(**kwargs)
+
 
 class Screen(ABC):
     # Common attributes for both implementations
@@ -534,6 +536,7 @@ def draw_all_panes(panes, max_x, padding_cache, terminal_height, screen,
 def generate_smartsign_patterns(
     pattern,
     smartsign: bool = False,
+    # Mutable default as "static" variable - created once at function definition
     _table: dict = {
         ',': '<', '.': '>', '/': '?',
         '1': '!', '2': '@', '3': '#', '4': '$', '5': '%',
