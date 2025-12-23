@@ -20,15 +20,12 @@ def _get_all_tmux_options() -> dict:
     """Batch read all tmux options in one subprocess call."""
     try:
         result = subprocess.run(
-            ['tmux', 'show-options', '-g'],
-            capture_output=True,
-            text=True,
-            check=False
+            ["tmux", "show-options", "-g"], capture_output=True, text=True, check=False
         )
         options = {}
-        for line in result.stdout.strip().split('\n'):
-            if ' ' in line:
-                key, value = line.split(' ', 1)
+        for line in result.stdout.strip().split("\n"):
+            if " " in line:
+                key, value = line.split(" ", 1)
                 options[key] = value.strip('"')
         return options
     except Exception:
@@ -43,21 +40,30 @@ def get_tmux_option(option: str, default: str) -> str:
 @dataclass
 class Config:
     """Configuration for easymotion."""
-    hints: str = field(default='asdghklqwertyuiopzxcvbnmfj;', metadata={'opt': '@easymotion-hints'})
-    case_sensitive: bool = field(default=False, metadata={'opt': '@easymotion-case-sensitive'})
-    smartsign: bool = field(default=False, metadata={'opt': '@easymotion-smartsign'})
-    vertical_border: str = field(default='│', metadata={'opt': '@easymotion-vertical-border'})
-    horizontal_border: str = field(default='─', metadata={'opt': '@easymotion-horizontal-border'})
-    use_curses: bool = field(default=False, metadata={'opt': '@easymotion-use-curses'})
+
+    hints: str = field(
+        default="asdghklqwertyuiopzxcvbnmfj;", metadata={"opt": "@easymotion-hints"}
+    )
+    case_sensitive: bool = field(
+        default=False, metadata={"opt": "@easymotion-case-sensitive"}
+    )
+    smartsign: bool = field(default=False, metadata={"opt": "@easymotion-smartsign"})
+    vertical_border: str = field(
+        default="│", metadata={"opt": "@easymotion-vertical-border"}
+    )
+    horizontal_border: str = field(
+        default="─", metadata={"opt": "@easymotion-horizontal-border"}
+    )
+    use_curses: bool = field(default=False, metadata={"opt": "@easymotion-use-curses"})
 
     @classmethod
-    def from_tmux(cls) -> 'Config':
+    def from_tmux(cls) -> "Config":
         """Load configuration from tmux options."""
         kwargs = {}
         for f in fields(cls):
             default_str = str(f.default).lower() if f.type is bool else f.default
-            raw = get_tmux_option(f.metadata['opt'], default_str)
-            kwargs[f.name] = raw.lower() == 'true' if f.type is bool else raw
+            raw = get_tmux_option(f.metadata["opt"], default_str)
+            kwargs[f.name] = raw.lower() == "true" if f.type is bool else raw
         return cls(**kwargs)
 
 
@@ -101,15 +107,15 @@ class Screen(ABC):
 
 class AnsiSequence(Screen):
     # ANSI escape sequences
-    ESC = '\033'
-    CLEAR = f'{ESC}[2J'
-    CLEAR_LINE = f'{ESC}[2K'
-    HIDE_CURSOR = f'{ESC}[?25l'
-    SHOW_CURSOR = f'{ESC}[?25h'
-    RESET = f'{ESC}[0m'
-    DIM = f'{ESC}[2m'
-    RED = f'{ESC}[1;31m'
-    GREEN = f'{ESC}[1;32m'
+    ESC = "\033"
+    CLEAR = f"{ESC}[2J"
+    CLEAR_LINE = f"{ESC}[2K"
+    HIDE_CURSOR = f"{ESC}[?25l"
+    SHOW_CURSOR = f"{ESC}[?25h"
+    RESET = f"{ESC}[0m"
+    DIM = f"{ESC}[2m"
+    RED = f"{ESC}[1;31m"
+    GREEN = f"{ESC}[1;32m"
 
     def init(self):
         sys.stdout.write(self.HIDE_CURSOR)
@@ -127,15 +133,14 @@ class AnsiSequence(Screen):
             return self.RED
         elif attr == self.A_HINT2:
             return self.GREEN
-        return ''
+        return ""
 
     def addstr(self, y: int, x: int, text: str, attr=0):
         attr_str = self.transform_attr(attr)
         if attr_str:
-            sys.stdout.write(
-                f'{self.ESC}[{y+1};{x+1}H{attr_str}{text}{self.RESET}')
+            sys.stdout.write(f"{self.ESC}[{y + 1};{x + 1}H{attr_str}{text}{self.RESET}")
         else:
-            sys.stdout.write(f'{self.ESC}[{y+1};{x+1}H{text}')
+            sys.stdout.write(f"{self.ESC}[{y + 1};{x + 1}H{text}")
 
     def refresh(self):
         sys.stdout.flush()
@@ -190,27 +195,28 @@ class Curses(Screen):
 
 def setup_logging(use_curses: bool = False):
     """Initialize logging configuration based on tmux options"""
-    debug = get_tmux_option('@easymotion-debug', 'false').lower() == 'true'
-    perf = get_tmux_option('@easymotion-perf', 'false').lower() == 'true'
+    debug = get_tmux_option("@easymotion-debug", "false").lower() == "true"
+    perf = get_tmux_option("@easymotion-perf", "false").lower() == "true"
 
     if not (debug or perf):
         logging.getLogger().disabled = True
         return
 
-    log_file = os.path.expanduser('~/easymotion.log')
+    log_file = os.path.expanduser("~/easymotion.log")
     logging.basicConfig(
         filename=log_file,
         level=logging.DEBUG,
-        format=f'%(asctime)s - %(levelname)s - {"CURSE" if use_curses else "ANSI"} - %(message)s'
+        format=f"%(asctime)s - %(levelname)s - {'CURSE' if use_curses else 'ANSI'} - %(message)s",
     )
 
 
 def perf_timer(func_name=None):
     """Performance timing decorator that only logs when perf is enabled"""
+
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            perf = get_tmux_option('@easymotion-perf', 'false').lower() == 'true'
+            perf = get_tmux_option("@easymotion-perf", "false").lower() == "true"
             if not perf:
                 return func(*args, **kwargs)
 
@@ -221,14 +227,16 @@ def perf_timer(func_name=None):
 
             logging.info(f"{name} took: {end_time - start_time:.3f} seconds")
             return result
+
         return wrapper
+
     return decorator
 
 
 @functools.lru_cache(maxsize=1024)
 def get_char_width(char: str) -> int:
     """Get visual width of a single character with caching"""
-    return 2 if unicodedata.east_asian_width(char) in 'WF' else 1
+    return 2 if unicodedata.east_asian_width(char) in "WF" else 1
 
 
 @functools.lru_cache(maxsize=1024)
@@ -252,11 +260,7 @@ def sh(cmd: list) -> str:
     """Execute shell command with optional logging"""
     try:
         result = subprocess.run(
-            cmd,
-            shell=False,
-            text=True,
-            capture_output=True,
-            check=True
+            cmd, shell=False, text=True, capture_output=True, check=True
         ).stdout
 
         logging.debug(f"Command: {cmd}")
@@ -271,24 +275,38 @@ def sh(cmd: list) -> str:
 
 def get_initial_tmux_info():
     """Get all needed tmux info in one optimized call"""
-    format_str = '#{pane_id},#{window_zoomed_flag},#{pane_active},' + \
-        '#{pane_top},#{pane_height},#{pane_left},#{pane_width},' + \
-        '#{pane_in_mode},#{scroll_position},' + \
-        '#{cursor_y},#{cursor_x},#{copy_cursor_y},#{copy_cursor_x}'
+    format_str = (
+        "#{pane_id},#{window_zoomed_flag},#{pane_active},"
+        + "#{pane_top},#{pane_height},#{pane_left},#{pane_width},"
+        + "#{pane_in_mode},#{scroll_position},"
+        + "#{cursor_y},#{cursor_x},#{copy_cursor_y},#{copy_cursor_x}"
+    )
 
-    cmd = ['tmux', 'list-panes', '-F', format_str]
+    cmd = ["tmux", "list-panes", "-F", format_str]
     output = sh(cmd).strip()
 
     panes_info = []
-    for line in output.split('\n'):
+    for line in output.split("\n"):
         if not line:
             continue
 
-        fields = line.split(',')
+        fields = line.split(",")
         # Use destructuring assignment for better readability and performance
-        (pane_id, zoomed, active, top, height,
-         left, width, in_mode, scroll_pos,
-         cursor_y, cursor_x, copy_cursor_y, copy_cursor_x) = fields
+        (
+            pane_id,
+            zoomed,
+            active,
+            top,
+            height,
+            left,
+            width,
+            in_mode,
+            scroll_pos,
+            cursor_y,
+            cursor_x,
+            copy_cursor_y,
+            copy_cursor_x,
+        ) = fields
 
         # Only show all panes in non-zoomed state, or only active pane in zoomed state
         if zoomed == "1" and active != "1":
@@ -300,11 +318,11 @@ def get_initial_tmux_info():
             start_y=int(top),
             height=int(height),
             start_x=int(left),
-            width=int(width)
+            width=int(width),
         )
 
         # Optimize flag setting
-        pane.copy_mode = (in_mode == "1")
+        pane.copy_mode = in_mode == "1"
         pane.scroll_position = int(scroll_pos or 0)
 
         # Set cursor position
@@ -321,9 +339,20 @@ def get_initial_tmux_info():
 
 
 class PaneInfo:
-    __slots__ = ('pane_id', 'active', 'start_y', 'height', 'start_x', 'width',
-                 'lines', 'positions', 'copy_mode', 'scroll_position',
-                 'cursor_y', 'cursor_x')
+    __slots__ = (
+        "pane_id",
+        "active",
+        "start_y",
+        "height",
+        "start_x",
+        "width",
+        "lines",
+        "positions",
+        "copy_mode",
+        "scroll_position",
+        "cursor_y",
+        "cursor_x",
+    )
 
     def __init__(self, pane_id, active, start_y, height, start_x, width):
         self.active = active
@@ -342,9 +371,8 @@ class PaneInfo:
 
 def get_terminal_size():
     """Get terminal size from tmux"""
-    output = sh(
-        ['tmux', 'display-message', '-p', '#{client_width},#{client_height}'])
-    width, height = map(int, output.strip().split(','))
+    output = sh(["tmux", "display-message", "-p", "#{client_width},#{client_height}"])
+    width, height = map(int, output.strip().split(","))
     return width, height - 1  # Subtract 1 from height
 
 
@@ -376,7 +404,7 @@ def getch(input_str=None, num_chars=1):
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     else:
         ch = input_str[:num_chars]
-    if ch == '\x03':
+    if ch == "\x03":
         logging.info("Operation cancelled by user")
         exit(1)
 
@@ -388,64 +416,85 @@ def tmux_capture_pane(pane):
     if not pane.height or not pane.width:
         return []
 
-    cmd = ['tmux', 'capture-pane', '-p', '-t', pane.pane_id]
+    cmd = ["tmux", "capture-pane", "-p", "-t", pane.pane_id]
     if pane.scroll_position > 0:
         end_pos = -(pane.scroll_position - pane.height + 1)
-        cmd.extend(['-S', str(-pane.scroll_position), '-E', str(end_pos)])
+        cmd.extend(["-S", str(-pane.scroll_position), "-E", str(end_pos)])
 
     # Directly split and limit lines
-    return sh(cmd)[:-1].split('\n')[:pane.height]
+    return sh(cmd)[:-1].split("\n")[: pane.height]
 
 
 def tmux_move_cursor(pane, line_num, true_col):
     # Execute commands sequentially
-    cmds = [
-        ['tmux', 'select-pane', '-t', pane.pane_id]
-    ]
+    cmds = [["tmux", "select-pane", "-t", pane.pane_id]]
 
     if not pane.copy_mode:
-        cmds.append(['tmux', 'copy-mode', '-t', pane.pane_id])
+        cmds.append(["tmux", "copy-mode", "-t", pane.pane_id])
 
-    cmds.append(['tmux', 'send-keys', '-X', '-t', pane.pane_id, 'top-line'])
+    cmds.append(["tmux", "send-keys", "-X", "-t", pane.pane_id, "top-line"])
     # Ensure we always start from column 0 of the *screen line*; doing this
     # before moving down avoids "start-of-line" jumping to the beginning of a
     # wrapped *logical* line.
-    cmds.append(['tmux', 'send-keys', '-X', '-t',
-                pane.pane_id, 'start-of-line'])
+    cmds.append(["tmux", "send-keys", "-X", "-t", pane.pane_id, "start-of-line"])
 
     if line_num > 0:
-        cmds.append(['tmux', 'send-keys', '-X', '-t', pane.pane_id,
-                    '-N', str(line_num), 'cursor-down'])
+        cmds.append(
+            [
+                "tmux",
+                "send-keys",
+                "-X",
+                "-t",
+                pane.pane_id,
+                "-N",
+                str(line_num),
+                "cursor-down",
+            ]
+        )
 
     if true_col > 0:
-        cmds.append(['tmux', 'send-keys', '-X', '-t', pane.pane_id,
-                    '-N', str(true_col), 'cursor-right'])
+        cmds.append(
+            [
+                "tmux",
+                "send-keys",
+                "-X",
+                "-t",
+                pane.pane_id,
+                "-N",
+                str(true_col),
+                "cursor-right",
+            ]
+        )
 
     for cmd in cmds:
         sh(cmd)
 
 
-def assign_hints_by_distance(matches, cursor_y, cursor_x, hints_keys: str = 'asdghklqwertyuiopzxcvbnmfj;'):
+def assign_hints_by_distance(
+    matches, cursor_y, cursor_x, hints_keys: str = "asdghklqwertyuiopzxcvbnmfj;"
+):
     """Sort matches by distance and assign hints"""
     # Calculate distances and sort
     matches_with_dist = []
     for match in matches:
         pane, line_num, col = match
-        dist = (pane.start_y + line_num - cursor_y)**2 + (pane.start_x + col - cursor_x)**2
+        dist = (pane.start_y + line_num - cursor_y) ** 2 + (
+            pane.start_x + col - cursor_x
+        ) ** 2
         matches_with_dist.append((dist, match))
 
     matches_with_dist.sort(key=lambda x: x[0])  # Sort by distance
 
     # Generate hints and create mapping
     hints = generate_hints(hints_keys, len(matches_with_dist))
-    logging.debug(f'{hints}')
+    logging.debug(f"{hints}")
     return {hint: match for (_, match), hint in zip(matches_with_dist, hints)}
 
 
 def generate_hints(keys: str, needed_count: Optional[int] = None) -> List[str]:
     """Generate hints with optimal single/double key distribution"""
     if not needed_count:
-        needed_count = len(keys)**2
+        needed_count = len(keys) ** 2
 
     keys_list = list(keys)
     key_count = len(keys_list)
@@ -477,8 +526,7 @@ def generate_hints(keys: str, needed_count: Optional[int] = None) -> List[str]:
     hints.extend(single_char_hints)
 
     # Filter out double char hints that start with any single char hint
-    filtered_doubles = [h for h in double_char_hints
-                        if h[0] not in single_char_hints]
+    filtered_doubles = [h for h in double_char_hints if h[0] not in single_char_hints]
 
     # Take needed doubles
     needed_doubles = needed_count - single_chars
@@ -509,8 +557,15 @@ def init_panes():
 
 
 @perf_timer()
-def draw_all_panes(panes, max_x, padding_cache, terminal_height, screen,
-                   vertical_border: str = '│', horizontal_border: str = '─'):
+def draw_all_panes(
+    panes,
+    max_x,
+    padding_cache,
+    terminal_height,
+    screen,
+    vertical_border: str = "│",
+    horizontal_border: str = "─",
+):
     """Draw all panes and their borders"""
     sorted_panes = sorted(panes, key=lambda p: p.start_y + p.height)
 
@@ -523,21 +578,23 @@ def draw_all_panes(panes, max_x, padding_cache, terminal_height, screen,
             if visual_width < pane.width:
                 padding_size = pane.width - visual_width
                 if padding_size not in padding_cache:
-                    padding_cache[padding_size] = ' ' * padding_size
+                    padding_cache[padding_size] = " " * padding_size
                 line = line + padding_cache[padding_size]
-            screen.addstr(pane.start_y + y, pane.start_x, line[:pane.width])
+            screen.addstr(pane.start_y + y, pane.start_x, line[: pane.width])
 
         # Draw vertical borders
         if pane.start_x + pane.width < max_x:
             for y in range(pane.start_y, pane.start_y + visible_height):
-                screen.addstr(y, pane.start_x + pane.width,
-                              vertical_border, screen.A_DIM)
+                screen.addstr(
+                    y, pane.start_x + pane.width, vertical_border, screen.A_DIM
+                )
 
         # Draw horizontal borders
         end_y = pane.start_y + visible_height
         if end_y < terminal_height and pane != sorted_panes[-1]:
-            screen.addstr(end_y, pane.start_x, horizontal_border *
-                          pane.width, screen.A_DIM)
+            screen.addstr(
+                end_y, pane.start_x, horizontal_border * pane.width, screen.A_DIM
+            )
 
     screen.refresh()
 
@@ -547,12 +604,28 @@ def generate_smartsign_patterns(
     smartsign: bool = False,
     # Mutable default as "static" variable - created once at function definition
     _table: dict = {
-        '1': '!', '2': '@', '3': '#', '4': '$', '5': '%',
-        '6': '^', '7': '&', '8': '*', '9': '(', '0': ')',
-        '-': '_', '=': '+', '[': '{', ']': '}', '\\': '|',
-        ';': ':', "'": '"', '`': '~', ',': '<', '.': '>',
-        '/': '?',
-    }
+        "1": "!",
+        "2": "@",
+        "3": "#",
+        "4": "$",
+        "5": "%",
+        "6": "^",
+        "7": "&",
+        "8": "*",
+        "9": "(",
+        "0": ")",
+        "-": "_",
+        "=": "+",
+        "[": "{",
+        "]": "}",
+        "\\": "|",
+        ";": ":",
+        "'": '"',
+        "`": "~",
+        ",": "<",
+        ".": ">",
+        "/": "?",
+    },
 ):
     """Generate all smartsign variants for ANY pattern
 
@@ -586,12 +659,14 @@ def generate_smartsign_patterns(
         char_options.append(options)
 
     # Generate all combinations (Cartesian product)
-    patterns = [''.join(combo) for combo in itertools.product(*char_options)]
+    patterns = ["".join(combo) for combo in itertools.product(*char_options)]
     return patterns
 
 
 @perf_timer("Finding matches")
-def find_matches(panes, search_pattern, case_sensitive: bool = False, smartsign: bool = False):
+def find_matches(
+    panes, search_pattern, case_sensitive: bool = False, smartsign: bool = False
+):
     """Generic pattern matching with smartsign support
 
     This function is pattern-agnostic - it works for any search pattern,
@@ -619,14 +694,14 @@ def find_matches(panes, search_pattern, case_sensitive: bool = False, smartsign:
                     continue
 
                 # Get substring at current position
-                substring = line[pos:pos + pattern_length]
+                substring = line[pos : pos + pattern_length]
 
                 # Skip if substring would split a wide character
                 if pattern_length > 1:
                     # Check if we're in the middle of a wide char
                     if pos > 0 and get_char_width(line[pos - 1]) == 2:
                         # Check if previous char's visual position overlaps with current pos
-                        visual_before = sum(get_char_width(c) for c in line[:pos - 1])
+                        visual_before = sum(get_char_width(c) for c in line[: pos - 1])
                         visual_at_pos = sum(get_char_width(c) for c in line[:pos])
                         if visual_at_pos - visual_before == 1:
                             # We're at the second half of a wide char, skip
@@ -636,9 +711,9 @@ def find_matches(panes, search_pattern, case_sensitive: bool = False, smartsign:
                 for pattern in search_patterns:
                     matched = False
                     if case_sensitive:
-                        matched = (substring == pattern)
+                        matched = substring == pattern
                     else:
-                        matched = (substring.lower() == pattern.lower())
+                        matched = substring.lower() == pattern.lower()
 
                     if matched:
                         visual_col = sum(get_char_width(c) for c in line[:pos])
@@ -652,12 +727,12 @@ def find_matches(panes, search_pattern, case_sensitive: bool = False, smartsign:
 def update_hints_display(screen, positions, current_key):
     """Update hint display based on current key sequence"""
     for screen_y, screen_x, pane_right_edge, char, next_char, hint in positions:
-        logging.debug(f'{screen_x} {pane_right_edge} {char} {next_char} {hint}')
+        logging.debug(f"{screen_x} {pane_right_edge} {char} {next_char} {hint}")
         if hint.startswith(current_key):
             next_x = screen_x + get_char_width(char)
             if next_x < pane_right_edge:
                 # Use space if next_char is empty (end of line case)
-                restore_char = next_char if next_char else ' '
+                restore_char = next_char if next_char else " "
                 logging.debug(f"Restoring next char {next_x} {restore_char}")
                 screen.addstr(screen_y, next_x, restore_char)
         else:
@@ -668,7 +743,7 @@ def update_hints_display(screen, positions, current_key):
             next_x = screen_x + get_char_width(char)
             if next_x < pane_right_edge:
                 # Use space if next_char is empty (end of line case)
-                restore_char = next_char if next_char else ' '
+                restore_char = next_char if next_char else " "
                 logging.debug(f"Restoring next char {next_x} {restore_char}")
                 screen.addstr(screen_y, next_x, restore_char)
             continue
@@ -676,15 +751,14 @@ def update_hints_display(screen, positions, current_key):
         # For matching hints:
         if len(hint) > len(current_key):
             # Show remaining hint character
-            screen.addstr(screen_y, screen_x,
-                          hint[len(current_key)], screen.A_HINT2)
+            screen.addstr(screen_y, screen_x, hint[len(current_key)], screen.A_HINT2)
         else:
             # If hint is fully entered, restore all original characters
             screen.addstr(screen_y, screen_x, char)
             next_x = screen_x + get_char_width(char)
             if next_x < pane_right_edge:
                 # Use space if next_char is empty (end of line case)
-                restore_char = next_char if next_char else ' '
+                restore_char = next_char if next_char else " "
                 screen.addstr(screen_y, next_x, restore_char)
 
     screen.refresh()
@@ -714,36 +788,42 @@ def main(screen: Screen, config: Config):
     panes, max_x, padding_cache = init_panes()
 
     # Get motion type from command line argument
-    motion_type = sys.argv[1] if len(sys.argv) > 1 else 's'
+    motion_type = sys.argv[1] if len(sys.argv) > 1 else "s"
 
     # Determine search mode and find matches
-    if motion_type == 's':
+    if motion_type == "s":
         # 1 char search
         search_pattern = getch(sys.argv[2], 1)
-        search_pattern = search_pattern.replace('\n', '').replace('\r', '')
+        search_pattern = search_pattern.replace("\n", "").replace("\r", "")
         if not search_pattern:
             return
-        matches = find_matches(panes, search_pattern,
-                               case_sensitive=config.case_sensitive,
-                               smartsign=config.smartsign)
-    elif motion_type == 's2':
+        matches = find_matches(
+            panes,
+            search_pattern,
+            case_sensitive=config.case_sensitive,
+            smartsign=config.smartsign,
+        )
+    elif motion_type == "s2":
         # 2 char search
         raw_input = getch(sys.argv[2], 2)
         logging.debug(f"Raw input (s2): {repr(raw_input)}")
-        search_pattern = raw_input.replace('\n', '').replace('\r', '')
+        search_pattern = raw_input.replace("\n", "").replace("\r", "")
         logging.debug(f"Search pattern (s2): {repr(search_pattern)}")
         if not search_pattern:
             return
-        matches = find_matches(panes, search_pattern,
-                               case_sensitive=config.case_sensitive,
-                               smartsign=config.smartsign)
+        matches = find_matches(
+            panes,
+            search_pattern,
+            case_sensitive=config.case_sensitive,
+            smartsign=config.smartsign,
+        )
     else:
         logging.error(f"Invalid motion type: {motion_type}")
         exit(1)
 
     # Check for matches
     if len(matches) == 0:
-        sh(['tmux', 'display-message', 'no match'])
+        sh(["tmux", "display-message", "no match"])
         return
     # If only one match, jump directly
     if len(matches) == 1:
@@ -771,19 +851,28 @@ def main(screen: Screen, config: Config):
             true_col = get_true_position(line, visual_col)
             if true_col < len(line):
                 char = line[true_col]
-                next_char = line[true_col+1] if true_col + 1 < len(line) else ''
-                positions.append((
-                    pane.start_y + line_num,  # screen_y
-                    pane.start_x + visual_col,  # screen_x
-                    pane.start_x + pane.width,  # pane_right_edge
-                    char,                     # original char at hint position
-                    next_char,                # original char at second hint position (if exists)
-                    hint
-                ))
+                next_char = line[true_col + 1] if true_col + 1 < len(line) else ""
+                positions.append(
+                    (
+                        pane.start_y + line_num,  # screen_y
+                        pane.start_x + visual_col,  # screen_x
+                        pane.start_x + pane.width,  # pane_right_edge
+                        char,  # original char at hint position
+                        next_char,  # original char at second hint position (if exists)
+                        hint,
+                    )
+                )
 
     terminal_width, terminal_height = get_terminal_size()
-    draw_all_panes(panes, max_x, padding_cache, terminal_height, screen,
-                   config.vertical_border, config.horizontal_border)
+    draw_all_panes(
+        panes,
+        max_x,
+        padding_cache,
+        terminal_height,
+        screen,
+        config.vertical_border,
+        config.horizontal_border,
+    )
     draw_all_hints(positions, terminal_height, screen)
     overlay_window_id = get_current_window_id()
     sh(["tmux", "select-window", "-t", overlay_window_id])
@@ -810,7 +899,7 @@ def main(screen: Screen, config: Config):
             update_hints_display(screen, positions, key_sequence)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     config = Config.from_tmux()
     screen: Screen = Curses() if config.use_curses else AnsiSequence()
     screen.init()
