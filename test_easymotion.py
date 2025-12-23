@@ -248,15 +248,20 @@ def test_smartsign_key_mappings():
 
 
 def test_smartsign_with_case_insensitive():
-    """Test smartsign combined with case insensitive mode"""
+    """Test smartsign combined with case insensitive mode (1-char and 2-char)"""
     pane = PaneInfo(
         pane_id='%1', active=True, start_y=0, height=10, start_x=0, width=80
     )
 
-    # Smartsign should work with case insensitive mode
+    # 1-char: smartsign should work with case insensitive mode
     pane.lines = ['test 3# CODE']
     matches = find_matches([pane], '3', case_sensitive=False, smartsign=True)
     assert len(matches) == 2  # Should find both '3' and '#'
+
+    # 2-char: should match all case variations + smartsign variants
+    pane.lines = ['3X #X 3x #x test']
+    matches = find_matches([pane], '3x', case_sensitive=False, smartsign=True)
+    assert len(matches) == 4  # Matches: 3X, #X, 3x, #x
 
 
 def test_smartsign_reverse_search():
@@ -608,17 +613,6 @@ def test_s2_smartsign_no_mapping():
     # Search for 'ab' should only match 'ab' (no mappings)
     matches = find_matches([pane], 'ab', smartsign=True)
     assert len(matches) == 1
-
-
-def test_s2_smartsign_with_case_insensitive():
-    """Test s2 mode with smartsign + case insensitive combination"""
-    pane = PaneInfo('%1', True, 0, 3, 0, 40)
-    pane.lines = ['3X #X 3x #x test']
-
-    # Should match all case variations + smartsign variants
-    matches = find_matches([pane], '3x', case_sensitive=False, smartsign=True)
-    # Matches: 3X, #X, 3x, #x (4 total)
-    assert len(matches) == 4
 
 
 def test_find_matches_2char_at_line_end(simple_pane):
