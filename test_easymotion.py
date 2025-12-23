@@ -1211,3 +1211,121 @@ def test_config_from_tmux(tmux_server):
         f"Expected case_sensitive=True, got {config.case_sensitive}"
     )
     assert config.smartsign is True, f"Expected smartsign=True, got {config.smartsign}"
+
+
+@requires_tmux
+def test_get_tmux_option_with_spaces(tmux_server):
+    """Integration test: verify option values with spaces are parsed correctly."""
+    _get_all_tmux_options.cache_clear()
+
+    # Set option with spaces
+    test_value = "hello world test"
+    subprocess.run(
+        [
+            "tmux",
+            "-L",
+            tmux_server.server_name,
+            "set-option",
+            "-g",
+            "@easymotion-test-spaces",
+            test_value,
+        ],
+        check=True,
+    )
+
+    original_run = subprocess.run
+
+    def patched_run(cmd, *args, **kwargs):
+        if cmd[0] == "tmux" and "show-options" in cmd:
+            new_cmd = ["tmux", "-L", tmux_server.server_name] + cmd[1:]
+            return original_run(new_cmd, *args, **kwargs)
+        return original_run(cmd, *args, **kwargs)
+
+    with patch("subprocess.run", patched_run):
+        result = get_tmux_option("@easymotion-test-spaces", "default")
+
+    assert result == test_value, f"Expected '{test_value}', got '{result}'"
+
+
+@requires_tmux
+def test_get_tmux_option_with_quotes(tmux_server):
+    """Integration test: verify option values with quotes are parsed correctly."""
+    _get_all_tmux_options.cache_clear()
+
+    # Set option with quotes (tmux stores this with escaped quotes)
+    test_value = 'it"s a test'
+    subprocess.run(
+        [
+            "tmux",
+            "-L",
+            tmux_server.server_name,
+            "set-option",
+            "-g",
+            "@easymotion-test-quotes",
+            test_value,
+        ],
+        check=True,
+    )
+
+    original_run = subprocess.run
+
+    def patched_run(cmd, *args, **kwargs):
+        if cmd[0] == "tmux" and "show-options" in cmd:
+            new_cmd = ["tmux", "-L", tmux_server.server_name] + cmd[1:]
+            return original_run(new_cmd, *args, **kwargs)
+        return original_run(cmd, *args, **kwargs)
+
+    with patch("subprocess.run", patched_run):
+        result = get_tmux_option("@easymotion-test-quotes", "default")
+
+    assert result == test_value, f"Expected '{test_value}', got '{result}'"
+
+
+@requires_tmux
+def test_config_bool_false_parsing(tmux_server):
+    """Integration test: verify bool 'false' is correctly parsed as False."""
+    _get_all_tmux_options.cache_clear()
+
+    # Explicitly set options to false
+    subprocess.run(
+        [
+            "tmux",
+            "-L",
+            tmux_server.server_name,
+            "set-option",
+            "-g",
+            "@easymotion-case-sensitive",
+            "false",
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "tmux",
+            "-L",
+            tmux_server.server_name,
+            "set-option",
+            "-g",
+            "@easymotion-smartsign",
+            "false",
+        ],
+        check=True,
+    )
+
+    original_run = subprocess.run
+
+    def patched_run(cmd, *args, **kwargs):
+        if cmd[0] == "tmux" and "show-options" in cmd:
+            new_cmd = ["tmux", "-L", tmux_server.server_name] + cmd[1:]
+            return original_run(new_cmd, *args, **kwargs)
+        return original_run(cmd, *args, **kwargs)
+
+    with patch("subprocess.run", patched_run):
+        config = Config.from_tmux()
+
+    assert config.case_sensitive is False, (
+        f"Expected case_sensitive=False, got {config.case_sensitive}"
+    )
+    assert config.smartsign is False, (
+        f"Expected smartsign=False, got {config.smartsign}"
+    )

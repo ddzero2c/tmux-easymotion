@@ -26,7 +26,9 @@ def _get_all_tmux_options() -> dict:
         for line in result.stdout.strip().split("\n"):
             if " " in line:
                 key, value = line.split(" ", 1)
-                options[key] = value.strip('"')
+                # Strip outer quotes and unescape inner quotes
+                value = value.strip('"').replace('\\"', '"')
+                options[key] = value
         return options
     except Exception:
         return {}
