@@ -784,7 +784,7 @@ class TmuxTestServer:
         self.server_name = f"pytest_{uuid.uuid4().hex[:8]}"
         self.width = width
         self.height = height
-        self.pane_id = None
+        self.pane_id: str = ""
 
     def start(self):
         """Start the tmux server with controlled dimensions."""
