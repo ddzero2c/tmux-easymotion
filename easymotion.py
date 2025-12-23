@@ -547,11 +547,11 @@ def generate_smartsign_patterns(
     smartsign: bool = False,
     # Mutable default as "static" variable - created once at function definition
     _table: dict = {
-        ',': '<', '.': '>', '/': '?',
         '1': '!', '2': '@', '3': '#', '4': '$', '5': '%',
         '6': '^', '7': '&', '8': '*', '9': '(', '0': ')',
-        '-': '_', '=': '+', ';': ':', '[': '{', ']': '}',
-        '`': '~', "'": '"', '\\': '|',
+        '-': '_', '=': '+', '[': '{', ']': '}', '\\': '|',
+        ';': ':', "'": '"', '`': '~', ',': '<', '.': '>',
+        '/': '?',
     }
 ):
     """Generate all smartsign variants for ANY pattern
