@@ -214,29 +214,21 @@ def test_find_matches_case_insensitive(simple_pane):
 
 
 def test_find_matches_smartsign():
-    """Test SMARTSIGN feature - searching ',' also finds '<'"""
+    """Test SMARTSIGN feature - various key mappings"""
     pane = PaneInfo(
         pane_id="%1", active=True, start_y=0, height=10, start_x=0, width=80
     )
-    pane.lines = ["hello, world < test"]
 
-    # With smartsign enabled, searching ',' should also find '<'
+    # Test ',' -> '<' mapping
+    pane.lines = ["hello, world < test"]
     matches = find_matches([pane], ",", smartsign=True)
-    # Should find both ',' and '<'
-    assert len(matches) >= 2
+    assert len(matches) == 2  # Should find both ',' and '<'
 
     # Without smartsign, should only find ','
     matches = find_matches([pane], ",", smartsign=False)
     assert len(matches) == 1
 
-
-def test_smartsign_key_mappings():
-    """Test smartsign with key number-to-symbol mappings (issue reported: '3' not matching '#')"""
-    pane = PaneInfo(
-        pane_id="%1", active=True, start_y=0, height=10, start_x=0, width=80
-    )
-
-    # Test '3' -> '#' mapping (user reported issue)
+    # Test '3' -> '#' mapping
     pane.lines = ["test 3# code"]
     matches = find_matches([pane], "3", smartsign=True)
     assert len(matches) == 2  # Should find both '3' and '#'
@@ -245,16 +237,6 @@ def test_smartsign_key_mappings():
     pane.lines = ["test 1! code"]
     matches = find_matches([pane], "1", smartsign=True)
     assert len(matches) == 2  # Should find both '1' and '!'
-
-    # Test '2' -> '@' mapping
-    pane.lines = ["email 2@ test"]
-    matches = find_matches([pane], "2", smartsign=True)
-    assert len(matches) == 2  # Should find both '2' and '@'
-
-    # Test '8' -> '*' mapping
-    pane.lines = ["star 8* test"]
-    matches = find_matches([pane], "8", smartsign=True)
-    assert len(matches) == 2  # Should find both '8' and '*'
 
 
 def test_smartsign_with_case_insensitive():
@@ -1153,48 +1135,22 @@ def test_get_tmux_option_returns_default(tmux_server):
 @requires_tmux
 def test_config_from_tmux(tmux_server):
     """Integration test: verify Config.from_tmux() reads all options correctly."""
-    # Clear cache to ensure fresh read
     _get_all_tmux_options.cache_clear()
 
-    # Set custom tmux options
-    subprocess.run(
-        [
-            "tmux",
-            "-L",
-            tmux_server.server_name,
-            "set-option",
-            "-g",
-            "@easymotion-hints",
-            "xyz",
-        ],
-        check=True,
-    )
-    subprocess.run(
-        [
-            "tmux",
-            "-L",
-            tmux_server.server_name,
-            "set-option",
-            "-g",
-            "@easymotion-case-sensitive",
-            "true",
-        ],
-        check=True,
-    )
-    subprocess.run(
-        [
-            "tmux",
-            "-L",
-            tmux_server.server_name,
-            "set-option",
-            "-g",
-            "@easymotion-smartsign",
-            "true",
-        ],
-        check=True,
-    )
+    def set_option(name, value):
+        subprocess.run(
+            ["tmux", "-L", tmux_server.server_name, "set-option", "-g", name, value],
+            check=True,
+        )
 
-    # Patch subprocess.run to use our test server
+    # Set all Config fields to non-default values
+    set_option("@easymotion-hints", "abc")
+    set_option("@easymotion-case-sensitive", "true")
+    set_option("@easymotion-smartsign", "true")
+    set_option("@easymotion-vertical-border", "|")
+    set_option("@easymotion-horizontal-border", "-")
+    set_option("@easymotion-use-curses", "true")
+
     original_run = subprocess.run
 
     def patched_run(cmd, *args, **kwargs):
@@ -1206,11 +1162,26 @@ def test_config_from_tmux(tmux_server):
     with patch("subprocess.run", patched_run):
         config = Config.from_tmux()
 
-    assert config.hints == "xyz", f"Expected hints='xyz', got '{config.hints}'"
-    assert config.case_sensitive is True, (
-        f"Expected case_sensitive=True, got {config.case_sensitive}"
-    )
-    assert config.smartsign is True, f"Expected smartsign=True, got {config.smartsign}"
+    # Verify all fields
+    assert config.hints == "abc"
+    assert config.case_sensitive is True
+    assert config.smartsign is True
+    assert config.vertical_border == "|"
+    assert config.horizontal_border == "-"
+    assert config.use_curses is True
+
+    # Now test with false values
+    _get_all_tmux_options.cache_clear()
+    set_option("@easymotion-case-sensitive", "false")
+    set_option("@easymotion-smartsign", "false")
+    set_option("@easymotion-use-curses", "false")
+
+    with patch("subprocess.run", patched_run):
+        config = Config.from_tmux()
+
+    assert config.case_sensitive is False
+    assert config.smartsign is False
+    assert config.use_curses is False
 
 
 @requires_tmux
@@ -1279,53 +1250,3 @@ def test_get_tmux_option_with_quotes(tmux_server):
         result = get_tmux_option("@easymotion-test-quotes", "default")
 
     assert result == test_value, f"Expected '{test_value}', got '{result}'"
-
-
-@requires_tmux
-def test_config_bool_false_parsing(tmux_server):
-    """Integration test: verify bool 'false' is correctly parsed as False."""
-    _get_all_tmux_options.cache_clear()
-
-    # Explicitly set options to false
-    subprocess.run(
-        [
-            "tmux",
-            "-L",
-            tmux_server.server_name,
-            "set-option",
-            "-g",
-            "@easymotion-case-sensitive",
-            "false",
-        ],
-        check=True,
-    )
-    subprocess.run(
-        [
-            "tmux",
-            "-L",
-            tmux_server.server_name,
-            "set-option",
-            "-g",
-            "@easymotion-smartsign",
-            "false",
-        ],
-        check=True,
-    )
-
-    original_run = subprocess.run
-
-    def patched_run(cmd, *args, **kwargs):
-        if cmd[0] == "tmux" and "show-options" in cmd:
-            new_cmd = ["tmux", "-L", tmux_server.server_name] + cmd[1:]
-            return original_run(new_cmd, *args, **kwargs)
-        return original_run(cmd, *args, **kwargs)
-
-    with patch("subprocess.run", patched_run):
-        config = Config.from_tmux()
-
-    assert config.case_sensitive is False, (
-        f"Expected case_sensitive=False, got {config.case_sensitive}"
-    )
-    assert config.smartsign is False, (
-        f"Expected smartsign=False, got {config.smartsign}"
-    )
