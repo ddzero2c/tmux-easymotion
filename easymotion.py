@@ -401,13 +401,15 @@ def tmux_move_cursor(pane, line_num, true_col):
         cmds.append(['tmux', 'copy-mode', '-t', pane.pane_id])
 
     cmds.append(['tmux', 'send-keys', '-X', '-t', pane.pane_id, 'top-line'])
+    # Ensure we always start from column 0 of the *screen line*; doing this
+    # before moving down avoids "start-of-line" jumping to the beginning of a
+    # wrapped *logical* line.
+    cmds.append(['tmux', 'send-keys', '-X', '-t',
+                pane.pane_id, 'start-of-line'])
 
     if line_num > 0:
         cmds.append(['tmux', 'send-keys', '-X', '-t', pane.pane_id,
                     '-N', str(line_num), 'cursor-down'])
-
-    cmds.append(['tmux', 'send-keys', '-X', '-t',
-                pane.pane_id, 'start-of-line'])
 
     if true_col > 0:
         cmds.append(['tmux', 'send-keys', '-X', '-t', pane.pane_id,
