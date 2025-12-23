@@ -7,7 +7,6 @@ tmux-easymotion is a tmux plugin for quickly jumping to visible text positions a
 ## Architecture
 
 - **easymotion.tmux** (bash): TPM entry point, sets up key bindings
-- **common.sh** (bash): Shared config functions, builds env vars for Python script
 - **mode-s.sh / mode-s2.sh** (bash): Motion type launchers
 - **easymotion.py** (Python): Core logic - capture panes, find matches, render hints, move cursor
 
