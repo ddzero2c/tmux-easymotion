@@ -12,7 +12,7 @@ import tty
 import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, fields
-from typing import List, Optional
+from typing import Any, List, Optional, Union
 
 
 @functools.lru_cache(maxsize=1)
@@ -61,7 +61,8 @@ class Config:
         """Load configuration from tmux options."""
         kwargs = {}
         for f in fields(cls):
-            default_str = str(f.default).lower() if f.type is bool else f.default
+            default = f.default
+            default_str = str(default).lower() if f.type is bool else str(default)
             raw = get_tmux_option(f.metadata["opt"], default_str)
             kwargs[f.name] = raw.lower() == "true" if f.type is bool else raw
         return cls(**kwargs)
@@ -75,7 +76,7 @@ class Screen(ABC):
     A_HINT2 = 3
 
     @abstractmethod
-    def transform_attr(self, attr):
+    def transform_attr(self, attr) -> Any:
         """Transform generic attributes to implementation-specific attributes"""
         pass
 
@@ -151,7 +152,7 @@ class AnsiSequence(Screen):
 
 class Curses(Screen):
     def __init__(self):
-        self.stdscr = None
+        self.stdscr: Optional[curses.window] = None
 
     def init(self):
         self.stdscr = curses.initscr()
@@ -181,15 +182,21 @@ class Curses(Screen):
         return curses.A_NORMAL
 
     def addstr(self, y: int, x: int, text: str, attr=0):
+        if self.stdscr is None:
+            return
         try:
             self.stdscr.addstr(y, x, text, self.transform_attr(attr))
         except curses.error:
             pass
 
     def refresh(self):
+        if self.stdscr is None:
+            return
         self.stdscr.refresh()
 
     def clear(self):
+        if self.stdscr is None:
+            return
         self.stdscr.clear()
 
 
