@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.1](https://github.com/ddzero2c/tmux-easymotion/compare/v1.1.0...v1.1.1) (2026-02-09)
+
+
+### Bug Fixes
+
+* correct cursor jump on wrapped lines, close [#18](https://github.com/ddzero2c/tmux-easymotion/issues/18) ([#19](https://github.com/ddzero2c/tmux-easymotion/issues/19)) ([686ef28](https://github.com/ddzero2c/tmux-easymotion/commit/686ef2887b4d51155fad8558d872c90d550ae693))
+* mode s opts ([15ea1f2](https://github.com/ddzero2c/tmux-easymotion/commit/15ea1f2a1e5362959df5b4ddd883dd5125cc107e))
+* use correct TPM version pin syntax in README, close [#22](https://github.com/ddzero2c/tmux-easymotion/issues/22) ([9ed85c0](https://github.com/ddzero2c/tmux-easymotion/commit/9ed85c05f454f7abc1580bb28b9d94875ddf6ea8))
+
 ## [1.1.0](https://github.com/ddzero2c/tmux-easymotion/compare/v1.0.0...v1.1.0) (2025-12-19)
 
 
