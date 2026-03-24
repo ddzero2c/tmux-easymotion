@@ -24,10 +24,12 @@ if [ -z "$S_KEY" ]; then
     S_KEY=$(get_tmux_option "@easymotion-key" "s")
 fi
 
+COPY_MODE=$(get_tmux_option "@easymotion-copy-mode" "copy-mode-vi")
+
 # Setup 1-char search binding
 if [ -n "$S_KEY" ]; then
     tmux bind "$S_KEY" run-shell "$CURRENT_DIR/mode-s.sh"
-    tmux bind -T copy-mode-vi "$S_KEY" run-shell "$CURRENT_DIR/mode-s.sh"
+    tmux bind -T "$COPY_MODE" "$S_KEY" run-shell "$CURRENT_DIR/mode-s.sh"
 fi
 
 # ============================================================================
@@ -36,5 +38,5 @@ fi
 S2_KEY=$(get_tmux_option "@easymotion-s2" "")
 if [ -n "$S2_KEY" ]; then
     tmux bind "$S2_KEY" run-shell "$CURRENT_DIR/mode-s2.sh"
-    tmux bind -T copy-mode-vi "$S2_KEY" run-shell "$CURRENT_DIR/mode-s2.sh"
+    tmux bind -T "$COPY_MODE" "$S2_KEY" run-shell "$CURRENT_DIR/mode-s2.sh"
 fi
