@@ -42,6 +42,7 @@ Press `prefix` + `I` to install
 | `@easymotion-hints` | `asdghklqwertyuiopzxcvbnmfj;` | Characters used for hints |
 | `@easymotion-case-sensitive` | `false` | Case-sensitive search |
 | `@easymotion-smartsign` | `false` | Match shifted symbols (e.g., `1` matches `!`) |
+| `@easymotion-copy-mode-no-prefix` | `false` | Bind keys directly in copy mode (no prefix required) |
 | `@easymotion-vertical-border` | `│` | Vertical border character |
 | `@easymotion-horizontal-border` | `─` | Horizontal border character |
 | `@easymotion-use-curses` | `false` | Use curses instead of ANSI sequences |
