@@ -33,18 +33,6 @@ def test_get_char_width():
     assert get_char_width(" ") == 1  # Space
     assert get_char_width("\n") == 1  # Newline
 
-    # Tab at column 0 is always 8 columns regardless of tmux version
-    assert get_char_width("\t", 0) == 8
-
-    if easymotion.TMUX_VERSION >= (3, 6):
-        # tmux 3.6+ renders tabs to the next 8-column tab stop
-        assert get_char_width("\t", 1) == 7
-        assert get_char_width("\t", 7) == 1
-    else:
-        # Older tmux renders tabs as a fixed-width 8-column glyph
-        assert get_char_width("\t", 1) == 8
-        assert get_char_width("\t", 7) == 8
-
 
 def test_get_string_width():
     assert get_string_width("hello") == 5
@@ -52,10 +40,58 @@ def test_get_string_width():
     assert get_string_width("hello こんにちは") == 16
     assert get_string_width("") == 0
 
-    # Leading tab always lands on the first tab stop
-    assert get_string_width("\t") == 8
 
-    if easymotion.TMUX_VERSION >= (3, 6):
+def test_get_true_position():
+    assert get_true_position("hello", 3) == 3
+    assert get_true_position("あいうえお", 4) == 2
+    assert get_true_position("hello あいうえお", 7) == 7
+    assert get_true_position("", 5) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tab handling — both tmux version code paths exercised on every CI run via
+# the ``tmux_mode`` fixture, regardless of which tmux is actually installed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(params=[(3, 5), (3, 6)], ids=["tmux<3.6", "tmux>=3.6"])
+def tmux_mode(request, monkeypatch):
+    """Force easymotion to behave as the parametrized tmux version.
+
+    Patches both ``TMUX_VERSION`` and the cached
+    ``_TMUX_HAS_POSITION_AWARE_TABS`` flag, then clears the width caches so
+    pre-fixture lookups don't bleed into the test.
+    """
+    version = request.param
+    monkeypatch.setattr(easymotion, "TMUX_VERSION", version)
+    monkeypatch.setattr(
+        easymotion, "_TMUX_HAS_POSITION_AWARE_TABS", version >= (3, 6)
+    )
+    easymotion._char_width_no_tab.cache_clear()
+    easymotion.get_string_width.cache_clear()
+    yield version
+    easymotion._char_width_no_tab.cache_clear()
+    easymotion.get_string_width.cache_clear()
+
+
+def test_get_char_width_tab(tmux_mode):
+    # Tab at column 0 is always 8 columns regardless of tmux version
+    assert get_char_width("\t", 0) == 8
+
+    if tmux_mode >= (3, 6):
+        # tmux 3.6+: position-aware (next 8-column tab stop)
+        assert get_char_width("\t", 1) == 7
+        assert get_char_width("\t", 7) == 1
+    else:
+        # Older tmux: fixed-width 8-column glyph
+        assert get_char_width("\t", 1) == 8
+        assert get_char_width("\t", 7) == 8
+
+
+def test_get_string_width_tab(tmux_mode):
+    assert get_string_width("\t") == 8  # leading tab always lands on first stop
+
+    if tmux_mode >= (3, 6):
         assert get_string_width("a\t") == 8  # 1 + (8-1)
         assert get_string_width("1234567\t") == 8  # 7 + (8-7)
         assert get_string_width("a\tb\t") == 16  # 1 + 7 + 1 + 7
@@ -65,22 +101,38 @@ def test_get_string_width():
         assert get_string_width("a\tb\t") == 18  # 1 + 8 + 1 + 8
 
 
-def test_get_true_position():
-    assert get_true_position("hello", 3) == 3
-    assert get_true_position("あいうえお", 4) == 2
-    assert get_true_position("hello あいうえお", 7) == 7
-    assert get_true_position("", 5) == 0
+def test_get_true_position_tab(tmux_mode):
+    # Halfway-through-tab still maps to the tab itself, both versions
+    assert get_true_position("\t", 4) == 1
+    assert get_true_position("\t", 8) == 1
 
-    # Tabs participate in visual->index mapping
-    assert get_true_position("\t", 4) == 1  # halfway through tab still lands on it
-    assert get_true_position("\t", 8) == 1  # full tab width
-
-    if easymotion.TMUX_VERSION >= (3, 6):
-        assert get_true_position("a\tb", 5) == 2  # halfway through tab
-        assert get_true_position("a\tb", 8) == 2  # b starts at column 8
+    # 'b' lives at string index 2 in "a\tb" regardless of tmux version;
+    # the visual column it sits on differs.
+    if tmux_mode >= (3, 6):
+        # 'a' = col 0, '\t' = cols 1-7, 'b' = col 8
+        assert get_true_position("a\tb", 5) == 2  # past tab → 'b'
+        assert get_true_position("a\tb", 8) == 2  # exactly at 'b'
     else:
-        assert get_true_position("a\tb", 5) == 2  # halfway through fixed-width tab
-        assert get_true_position("a\tb", 9) == 3  # b starts at column 9
+        # 'a' = col 0, '\t' = cols 1-8, 'b' = col 9
+        assert get_true_position("a\tb", 5) == 2  # past tab → 'b'
+        assert get_true_position("a\tb", 9) == 2  # exactly at 'b'
+    assert get_true_position("a\tb", 100) == 3  # past end of string
+
+
+def test_find_matches_visual_col_after_tab(tmux_mode):
+    """Match column reported by find_matches must respect tab width."""
+    pane = PaneInfo(
+        pane_id="%0", active=True, start_y=0, height=10, start_x=0, width=80
+    )
+    pane.lines = ["a\tb"]
+
+    matches = find_matches([pane], "b")
+    assert len(matches) == 1
+    _, line_num, visual_col = matches[0]
+    assert line_num == 0
+
+    expected = 8 if tmux_mode >= (3, 6) else 9
+    assert visual_col == expected
 
 
 def test_calculate_tab_width():
