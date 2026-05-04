@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/ddzero2c/tmux-easymotion/compare/v1.2.0...v1.2.1) (2026-05-04)
+
+
+### Bug Fixes
+
+* handle tab rendering on tmux 3.6+ ([#26](https://github.com/ddzero2c/tmux-easymotion/issues/26)) ([7ae77e9](https://github.com/ddzero2c/tmux-easymotion/commit/7ae77e981aac0ff525e2a376c8b818e45eeac6ab))
+
 ## [1.2.0](https://github.com/ddzero2c/tmux-easymotion/compare/v1.1.0...v1.2.0) (2026-03-26)
 
 
