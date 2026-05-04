@@ -5,11 +5,14 @@ from unittest.mock import patch
 
 import pytest
 
+import easymotion
 from easymotion import (
     Config,
     PaneInfo,
+    _detect_tmux_version,
     _get_all_tmux_options,
     assign_hints_by_distance,
+    calculate_tab_width,
     find_matches,
     generate_hints,
     generate_smartsign_patterns,
@@ -30,6 +33,18 @@ def test_get_char_width():
     assert get_char_width(" ") == 1  # Space
     assert get_char_width("\n") == 1  # Newline
 
+    # Tab at column 0 is always 8 columns regardless of tmux version
+    assert get_char_width("\t", 0) == 8
+
+    if easymotion.TMUX_VERSION >= (3, 6):
+        # tmux 3.6+ renders tabs to the next 8-column tab stop
+        assert get_char_width("\t", 1) == 7
+        assert get_char_width("\t", 7) == 1
+    else:
+        # Older tmux renders tabs as a fixed-width 8-column glyph
+        assert get_char_width("\t", 1) == 8
+        assert get_char_width("\t", 7) == 8
+
 
 def test_get_string_width():
     assert get_string_width("hello") == 5
@@ -37,12 +52,82 @@ def test_get_string_width():
     assert get_string_width("hello こんにちは") == 16
     assert get_string_width("") == 0
 
+    # Leading tab always lands on the first tab stop
+    assert get_string_width("\t") == 8
+
+    if easymotion.TMUX_VERSION >= (3, 6):
+        assert get_string_width("a\t") == 8  # 1 + (8-1)
+        assert get_string_width("1234567\t") == 8  # 7 + (8-7)
+        assert get_string_width("a\tb\t") == 16  # 1 + 7 + 1 + 7
+    else:
+        assert get_string_width("a\t") == 9  # 1 + 8
+        assert get_string_width("1234567\t") == 15  # 7 + 8
+        assert get_string_width("a\tb\t") == 18  # 1 + 8 + 1 + 8
+
 
 def test_get_true_position():
     assert get_true_position("hello", 3) == 3
     assert get_true_position("あいうえお", 4) == 2
     assert get_true_position("hello あいうえお", 7) == 7
     assert get_true_position("", 5) == 0
+
+    # Tabs participate in visual->index mapping
+    assert get_true_position("\t", 4) == 1  # halfway through tab still lands on it
+    assert get_true_position("\t", 8) == 1  # full tab width
+
+    if easymotion.TMUX_VERSION >= (3, 6):
+        assert get_true_position("a\tb", 5) == 2  # halfway through tab
+        assert get_true_position("a\tb", 8) == 2  # b starts at column 8
+    else:
+        assert get_true_position("a\tb", 5) == 2  # halfway through fixed-width tab
+        assert get_true_position("a\tb", 9) == 3  # b starts at column 9
+
+
+def test_calculate_tab_width():
+    assert calculate_tab_width(0) == 8
+    assert calculate_tab_width(1) == 7
+    assert calculate_tab_width(7) == 1
+    assert calculate_tab_width(8) == 8
+    assert calculate_tab_width(9) == 7
+    # Custom tab size
+    assert calculate_tab_width(0, tab_size=4) == 4
+    assert calculate_tab_width(3, tab_size=4) == 1
+
+
+def test_tmux_version_detection_returns_tuple():
+    version = _detect_tmux_version()
+    assert isinstance(version, tuple)
+    assert len(version) == 2
+    major, minor = version
+    assert isinstance(major, int) and isinstance(minor, int)
+    assert major >= 0 and minor >= 0
+
+
+def test_tmux_version_string_parsing():
+    """Replicates the parser inside _detect_tmux_version() for known formats."""
+    import re
+
+    cases = [
+        ("tmux 3.5", (3, 5)),
+        ("tmux 3.6a", (3, 6)),
+        ("tmux 3.0a", (3, 0)),
+        ("tmux 2.9a", (2, 9)),
+        ("tmux next-3.6", (3, 6)),
+        ("tmux next-3.7", (3, 7)),
+        ("tmux 3.1-rc", (3, 1)),
+        ("tmux 3.1-rc2", (3, 1)),
+        ("tmux 3.1c", (3, 1)),
+        ("tmux master", (0, 0)),
+        ("tmux openbsd-6.6", (0, 0)),
+        ("tmux openbsd-7.0", (0, 0)),
+    ]
+    for version_str, expected in cases:
+        if "openbsd-" in version_str or "master" in version_str:
+            result = (0, 0)
+        else:
+            match = re.search(r"(?:next-)?(\d+)\.(\d+)", version_str)
+            result = (int(match.group(1)), int(match.group(2))) if match else (0, 0)
+        assert result == expected, f"{version_str!r} -> {result}, expected {expected}"
 
 
 def test_generate_hints():
