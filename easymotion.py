@@ -492,82 +492,37 @@ def tmux_capture_pane(pane):
 
 
 def tmux_move_cursor(pane, line_num, true_col):
-    # Execute commands sequentially
-    cmds = [["tmux", "select-pane", "-t", pane.pane_id]]
-
+    pid = pane.pane_id
+    cmds = [["tmux", "select-pane", "-t", pid]]
     if not pane.copy_mode:
-        cmds.append(["tmux", "copy-mode", "-t", pane.pane_id])
+        cmds.append(["tmux", "copy-mode", "-t", pid])
 
-    cmds.append(["tmux", "send-keys", "-X", "-t", pane.pane_id, "top-line"])
-    # Ensure we always start from column 0 of the *screen line*; doing this
-    # before moving down avoids "start-of-line" jumping to the beginning of a
-    # wrapped *logical* line.
-    cmds.append(["tmux", "send-keys", "-X", "-t", pane.pane_id, "start-of-line"])
+    def x(*args):
+        cmds.append(["tmux", "send-keys", "-X", "-t", pid, *args])
 
-    # tmux's copy-mode cursor-down maintains an "at end of line" bias via
-    # internal lastcx/lastsx state. When the top of the pane has empty rows,
-    # that state is never primed (cursor-down on an empty row does not
-    # update lastsx), so subsequent cursor-down -N pulls the cursor to the
-    # end of every non-empty row it crosses. Walk down to the first
-    # non-empty row, run start-of-line to set lastsx > 0, then walk back
-    # so the user-visible jump starts from a clean (0, 0) with primed state.
+    # start-of-line on row 0 (instead of after cursor-down) so it can't
+    # walk into a wrapped *logical* line above the target — issue #18.
+    x("top-line")
+    x("start-of-line")
+
+    # tmux's cursor-down keeps an "at end of line" bias via lastcx/lastsx.
+    # cursor-down on an empty row never updates lastsx, so a later
+    # cursor-down -N drags the cursor to the end of every non-empty row
+    # it crosses (visible on tmux 3.6+ when the pane has leading empty
+    # rows, e.g. Claude Code's UI). Walk to the first non-empty row and
+    # run start-of-line to prime lastsx > 0, then absorb the walk into
+    # the main descent so we don't pay an extra cursor-up round-trip.
     first_non_empty = next((i for i, line in enumerate(pane.lines) if line), 0)
-    if first_non_empty > 0:
-        cmds.append(
-            [
-                "tmux",
-                "send-keys",
-                "-X",
-                "-t",
-                pane.pane_id,
-                "-N",
-                str(first_non_empty),
-                "cursor-down",
-            ]
-        )
-        cmds.append(
-            ["tmux", "send-keys", "-X", "-t", pane.pane_id, "start-of-line"]
-        )
-        cmds.append(
-            [
-                "tmux",
-                "send-keys",
-                "-X",
-                "-t",
-                pane.pane_id,
-                "-N",
-                str(first_non_empty),
-                "cursor-up",
-            ]
-        )
+    rows_remaining = line_num
+    if 0 < first_non_empty <= line_num:
+        x("-N", str(first_non_empty), "cursor-down")
+        x("start-of-line")
+        rows_remaining -= first_non_empty
 
-    if line_num > 0:
-        cmds.append(
-            [
-                "tmux",
-                "send-keys",
-                "-X",
-                "-t",
-                pane.pane_id,
-                "-N",
-                str(line_num),
-                "cursor-down",
-            ]
-        )
-
+    if rows_remaining > 0:
+        x("-N", str(rows_remaining), "cursor-down")
     if true_col > 0:
-        cmds.append(
-            [
-                "tmux",
-                "send-keys",
-                "-X",
-                "-t",
-                pane.pane_id,
-                "-N",
-                str(true_col),
-                "cursor-right",
-            ]
-        )
+        x("-N", str(true_col), "cursor-right")
 
     for cmd in cmds:
         sh(cmd)
