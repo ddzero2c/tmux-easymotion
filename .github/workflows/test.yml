@@ -60,6 +60,13 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements-dev.txt
 
+    - name: Install tmux on macOS
+      if: runner.os == 'macOS'
+      run: brew install tmux
+
+    - name: Show tmux version
+      run: tmux -V
+
     - name: Run tests
       run: |
         pytest test_easymotion.py -v --cache-clear

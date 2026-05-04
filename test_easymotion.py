@@ -5,11 +5,14 @@ from unittest.mock import patch
 
 import pytest
 
+import easymotion
 from easymotion import (
     Config,
     PaneInfo,
+    _detect_tmux_version,
     _get_all_tmux_options,
     assign_hints_by_distance,
+    calculate_tab_width,
     find_matches,
     generate_hints,
     generate_smartsign_patterns,
@@ -43,6 +46,140 @@ def test_get_true_position():
     assert get_true_position("あいうえお", 4) == 2
     assert get_true_position("hello あいうえお", 7) == 7
     assert get_true_position("", 5) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tab handling — both tmux version code paths exercised on every CI run via
+# the ``tmux_mode`` fixture, regardless of which tmux is actually installed.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(params=[(3, 5), (3, 6)], ids=["tmux<3.6", "tmux>=3.6"])
+def tmux_mode(request, monkeypatch):
+    """Force easymotion to behave as the parametrized tmux version.
+
+    Patches both ``TMUX_VERSION`` and the cached
+    ``_TMUX_HAS_POSITION_AWARE_TABS`` flag, then clears the width caches so
+    pre-fixture lookups don't bleed into the test.
+    """
+    version = request.param
+    monkeypatch.setattr(easymotion, "TMUX_VERSION", version)
+    monkeypatch.setattr(
+        easymotion, "_TMUX_HAS_POSITION_AWARE_TABS", version >= (3, 6)
+    )
+    easymotion._char_width_no_tab.cache_clear()
+    easymotion.get_string_width.cache_clear()
+    yield version
+    easymotion._char_width_no_tab.cache_clear()
+    easymotion.get_string_width.cache_clear()
+
+
+def test_get_char_width_tab(tmux_mode):
+    # Tab at column 0 is always 8 columns regardless of tmux version
+    assert get_char_width("\t", 0) == 8
+
+    if tmux_mode >= (3, 6):
+        # tmux 3.6+: position-aware (next 8-column tab stop)
+        assert get_char_width("\t", 1) == 7
+        assert get_char_width("\t", 7) == 1
+    else:
+        # Older tmux: fixed-width 8-column glyph
+        assert get_char_width("\t", 1) == 8
+        assert get_char_width("\t", 7) == 8
+
+
+def test_get_string_width_tab(tmux_mode):
+    assert get_string_width("\t") == 8  # leading tab always lands on first stop
+
+    if tmux_mode >= (3, 6):
+        assert get_string_width("a\t") == 8  # 1 + (8-1)
+        assert get_string_width("1234567\t") == 8  # 7 + (8-7)
+        assert get_string_width("a\tb\t") == 16  # 1 + 7 + 1 + 7
+    else:
+        assert get_string_width("a\t") == 9  # 1 + 8
+        assert get_string_width("1234567\t") == 15  # 7 + 8
+        assert get_string_width("a\tb\t") == 18  # 1 + 8 + 1 + 8
+
+
+def test_get_true_position_tab(tmux_mode):
+    # Halfway-through-tab still maps to the tab itself, both versions
+    assert get_true_position("\t", 4) == 1
+    assert get_true_position("\t", 8) == 1
+
+    # 'b' lives at string index 2 in "a\tb" regardless of tmux version;
+    # the visual column it sits on differs.
+    if tmux_mode >= (3, 6):
+        # 'a' = col 0, '\t' = cols 1-7, 'b' = col 8
+        assert get_true_position("a\tb", 5) == 2  # past tab → 'b'
+        assert get_true_position("a\tb", 8) == 2  # exactly at 'b'
+    else:
+        # 'a' = col 0, '\t' = cols 1-8, 'b' = col 9
+        assert get_true_position("a\tb", 5) == 2  # past tab → 'b'
+        assert get_true_position("a\tb", 9) == 2  # exactly at 'b'
+    assert get_true_position("a\tb", 100) == 3  # past end of string
+
+
+def test_find_matches_visual_col_after_tab(tmux_mode):
+    """Match column reported by find_matches must respect tab width."""
+    pane = PaneInfo(
+        pane_id="%0", active=True, start_y=0, height=10, start_x=0, width=80
+    )
+    pane.lines = ["a\tb"]
+
+    matches = find_matches([pane], "b")
+    assert len(matches) == 1
+    _, line_num, visual_col = matches[0]
+    assert line_num == 0
+
+    expected = 8 if tmux_mode >= (3, 6) else 9
+    assert visual_col == expected
+
+
+def test_calculate_tab_width():
+    assert calculate_tab_width(0) == 8
+    assert calculate_tab_width(1) == 7
+    assert calculate_tab_width(7) == 1
+    assert calculate_tab_width(8) == 8
+    assert calculate_tab_width(9) == 7
+    # Custom tab size
+    assert calculate_tab_width(0, tab_size=4) == 4
+    assert calculate_tab_width(3, tab_size=4) == 1
+
+
+def test_tmux_version_detection_returns_tuple():
+    version = _detect_tmux_version()
+    assert isinstance(version, tuple)
+    assert len(version) == 2
+    major, minor = version
+    assert isinstance(major, int) and isinstance(minor, int)
+    assert major >= 0 and minor >= 0
+
+
+def test_tmux_version_string_parsing():
+    """Replicates the parser inside _detect_tmux_version() for known formats."""
+    import re
+
+    cases = [
+        ("tmux 3.5", (3, 5)),
+        ("tmux 3.6a", (3, 6)),
+        ("tmux 3.0a", (3, 0)),
+        ("tmux 2.9a", (2, 9)),
+        ("tmux next-3.6", (3, 6)),
+        ("tmux next-3.7", (3, 7)),
+        ("tmux 3.1-rc", (3, 1)),
+        ("tmux 3.1-rc2", (3, 1)),
+        ("tmux 3.1c", (3, 1)),
+        ("tmux master", (0, 0)),
+        ("tmux openbsd-6.6", (0, 0)),
+        ("tmux openbsd-7.0", (0, 0)),
+    ]
+    for version_str, expected in cases:
+        if "openbsd-" in version_str or "master" in version_str:
+            result = (0, 0)
+        else:
+            match = re.search(r"(?:next-)?(\d+)\.(\d+)", version_str)
+            result = (int(match.group(1)), int(match.group(2))) if match else (0, 0)
+        assert result == expected, f"{version_str!r} -> {result}, expected {expected}"
 
 
 def test_generate_hints():
@@ -974,6 +1111,94 @@ def test_cursor_jump_on_wrapped_line(tmux_server):
     assert cursor_x == target_col, (
         f"Cursor X position wrong: expected {target_col}, got {cursor_x}"
     )
+
+
+@requires_tmux
+def test_cursor_jump_with_empty_top_rows():
+    """Regression test: cursor-down propagated end-of-line bias on tmux 3.6+.
+
+    When the top rows of the pane are empty, tmux's copy-mode cursor-down
+    never primed its internal lastsx state, so cursor-down -N pulled the
+    cursor to the end of every non-empty row it crossed. With ``pane.lines``
+    populated, ``tmux_move_cursor`` must compensate so the user-visible
+    landing matches (target_line, target_col).
+
+    Uses a custom 80x20 server so the user's interactive shell prompt
+    can't wrap into row 0 and defeat the empty-leading-row precondition
+    on slower CI runners.
+    """
+    server = TmuxTestServer(width=80, height=20)
+    try:
+        server.start()
+    except RuntimeError as e:
+        pytest.skip(str(e))
+
+    try:
+        pane_id = server.pane_id
+
+        # Stage content with leading blank line so screen row 0 is empty.
+        # `clear` first wipes any prompt; sleep keeps the pane stable.
+        target_marker = "TARGET_HERE"
+        content_file = f"/tmp/easymotion_test_{uuid.uuid4().hex[:8]}.txt"
+        with open(content_file, "w") as f:
+            f.write(f"\nfirst content\nsecond content\nthird {target_marker} line\n")
+
+        server.send_keys(f"clear; cat {content_file}; sleep 30", "Enter")
+
+        pane = PaneInfo(
+            pane_id, active=True, start_y=0, height=20, start_x=0, width=80
+        )
+        pane.copy_mode = False
+
+        def capture_pane_lines():
+            capture = subprocess.run(
+                [
+                    "tmux", "-L", server.server_name,
+                    "capture-pane", "-p", "-t", pane_id,
+                ],
+                capture_output=True,
+                text=True,
+            ).stdout
+            return capture[:-1].split("\n")[: pane.height]
+
+        # Poll until the content appears and row 0 is empty. The pane
+        # state isn't observable until the shell finishes processing the
+        # typed command, which is timing-sensitive on slow CI runners.
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            pane.lines = capture_pane_lines()
+            target_visible = any(target_marker in line for line in pane.lines)
+            if target_visible and pane.lines[0] == "":
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError(
+                f"Test setup did not stabilise: pane.lines[0]={pane.lines[0]!r}, "
+                f"target_visible="
+                f"{any(target_marker in line for line in pane.lines)}"
+            )
+
+        target_line = next(
+            i for i, line in enumerate(pane.lines) if target_marker in line
+        )
+        target_col = pane.lines[target_line].index(target_marker)
+
+        with patch("easymotion.sh", server.make_sh_for_server()):
+            tmux_move_cursor(pane, target_line, target_col)
+
+        time.sleep(0.1)
+
+        cursor_x, cursor_y = server.get_cursor_position()
+        assert cursor_y == target_line, (
+            f"Cursor landed on row {cursor_y}, expected {target_line}. "
+            f"This indicates cursor-right wrapped past end of row because "
+            f"cursor-down ended at end-of-line instead of col 0."
+        )
+        assert cursor_x == target_col, (
+            f"Cursor at col {cursor_x}, expected {target_col}"
+        )
+    finally:
+        server.stop()
 
 
 # =============================================================================

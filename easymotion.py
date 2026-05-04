@@ -4,6 +4,7 @@ import functools
 import itertools
 import logging
 import os
+import re
 import subprocess
 import sys
 import termios
@@ -13,6 +14,38 @@ import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, fields
 from typing import Any, List, Optional
+
+
+def _detect_tmux_version() -> tuple:
+    """Detect installed tmux version as (major, minor).
+
+    Returns (0, 0) when detection fails or the version cannot be parsed
+    (e.g. ``tmux master``, ``tmux openbsd-6.6``). The fallback selects the
+    pre-3.6 fixed-width tab behaviour, which matches every released tmux
+    that shipped before position-aware tab rendering.
+    """
+    try:
+        result = subprocess.run(
+            ["tmux", "-V"], capture_output=True, text=True, check=True
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return (0, 0)
+
+    version_str = result.stdout.strip()
+    if "openbsd-" in version_str or "master" in version_str:
+        return (0, 0)
+
+    match = re.search(r"(?:next-)?(\d+)\.(\d+)", version_str)
+    if match:
+        return (int(match.group(1)), int(match.group(2)))
+    return (0, 0)
+
+
+TMUX_VERSION = _detect_tmux_version()
+# tmux 3.6 changed tab rendering to be position-aware (terminal-correct),
+# matching the tab-stop behaviour expected by terminals. Older tmux
+# rendered tabs as a fixed 8-column glyph regardless of column.
+_TMUX_HAS_POSITION_AWARE_TABS = TMUX_VERSION >= (3, 6)
 
 
 @functools.lru_cache(maxsize=1)
@@ -242,24 +275,48 @@ def perf_timer(func_name=None):
     return decorator
 
 
+def calculate_tab_width(position: int, tab_size: int = 8) -> int:
+    """Visual columns a tab consumes when starting at ``position``."""
+    return tab_size - (position % tab_size)
+
+
 @functools.lru_cache(maxsize=1024)
-def get_char_width(char: str) -> int:
-    """Get visual width of a single character with caching"""
+def _char_width_no_tab(char: str) -> int:
     return 2 if unicodedata.east_asian_width(char) in "WF" else 1
+
+
+def get_char_width(char: str, position: int = 0) -> int:
+    """Get visual width of a single character.
+
+    ``position`` is only consulted for tab characters; for all other
+    characters the result is cached and independent of column. Tab width
+    depends on the running tmux version: 3.6+ renders tabs at the next
+    multiple of 8 (terminal-correct), older tmux always renders tabs as
+    8 columns. Falling back to the pre-3.6 behaviour when the version
+    cannot be detected keeps existing setups working.
+    """
+    if char == "\t":
+        if _TMUX_HAS_POSITION_AWARE_TABS:
+            return calculate_tab_width(position)
+        return 8
+    return _char_width_no_tab(char)
 
 
 @functools.lru_cache(maxsize=1024)
 def get_string_width(s: str) -> int:
-    """Calculate visual width of string, accounting for double-width characters"""
-    return sum(map(get_char_width, s))
+    """Visual width of a string, accounting for wide characters and tabs."""
+    visual_pos = 0
+    for char in s:
+        visual_pos += get_char_width(char, visual_pos)
+    return visual_pos
 
 
 def get_true_position(line, target_col):
-    """Calculate true position accounting for wide characters"""
+    """Convert visual column to string index, accounting for wide chars and tabs."""
     visual_pos = 0
     true_pos = 0
     while true_pos < len(line) and visual_pos < target_col:
-        char_width = get_char_width(line[true_pos])
+        char_width = get_char_width(line[true_pos], visual_pos)
         visual_pos += char_width
         true_pos += 1
     return true_pos
@@ -435,45 +492,37 @@ def tmux_capture_pane(pane):
 
 
 def tmux_move_cursor(pane, line_num, true_col):
-    # Execute commands sequentially
-    cmds = [["tmux", "select-pane", "-t", pane.pane_id]]
-
+    pid = pane.pane_id
+    cmds = [["tmux", "select-pane", "-t", pid]]
     if not pane.copy_mode:
-        cmds.append(["tmux", "copy-mode", "-t", pane.pane_id])
+        cmds.append(["tmux", "copy-mode", "-t", pid])
 
-    cmds.append(["tmux", "send-keys", "-X", "-t", pane.pane_id, "top-line"])
-    # Ensure we always start from column 0 of the *screen line*; doing this
-    # before moving down avoids "start-of-line" jumping to the beginning of a
-    # wrapped *logical* line.
-    cmds.append(["tmux", "send-keys", "-X", "-t", pane.pane_id, "start-of-line"])
+    def x(*args):
+        cmds.append(["tmux", "send-keys", "-X", "-t", pid, *args])
 
-    if line_num > 0:
-        cmds.append(
-            [
-                "tmux",
-                "send-keys",
-                "-X",
-                "-t",
-                pane.pane_id,
-                "-N",
-                str(line_num),
-                "cursor-down",
-            ]
-        )
+    # start-of-line on row 0 (instead of after cursor-down) so it can't
+    # walk into a wrapped *logical* line above the target — issue #18.
+    x("top-line")
+    x("start-of-line")
 
+    # tmux's cursor-down keeps an "at end of line" bias via lastcx/lastsx.
+    # cursor-down on an empty row never updates lastsx, so a later
+    # cursor-down -N drags the cursor to the end of every non-empty row
+    # it crosses (visible on tmux 3.6+ when the pane has leading empty
+    # rows, e.g. Claude Code's UI). Walk to the first non-empty row and
+    # run start-of-line to prime lastsx > 0, then absorb the walk into
+    # the main descent so we don't pay an extra cursor-up round-trip.
+    first_non_empty = next((i for i, line in enumerate(pane.lines) if line), 0)
+    rows_remaining = line_num
+    if 0 < first_non_empty <= line_num:
+        x("-N", str(first_non_empty), "cursor-down")
+        x("start-of-line")
+        rows_remaining -= first_non_empty
+
+    if rows_remaining > 0:
+        x("-N", str(rows_remaining), "cursor-down")
     if true_col > 0:
-        cmds.append(
-            [
-                "tmux",
-                "send-keys",
-                "-X",
-                "-t",
-                pane.pane_id,
-                "-N",
-                str(true_col),
-                "cursor-right",
-            ]
-        )
+        x("-N", str(true_col), "cursor-right")
 
     for cmd in cmds:
         sh(cmd)
@@ -725,7 +774,7 @@ def find_matches(
                         matched = substring.lower() == pattern.lower()
 
                     if matched:
-                        visual_col = sum(get_char_width(c) for c in line[:pos])
+                        visual_col = get_string_width(line[:pos])
                         matches.append((pane, line_num, visual_col))
                         break  # Found match, no need to check other patterns
 
