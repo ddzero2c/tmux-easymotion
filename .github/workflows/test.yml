@@ -60,6 +60,9 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements-dev.txt
 
+    - name: Show tmux version
+      run: tmux -V
+
     - name: Run tests
       run: |
         pytest test_easymotion.py -v --cache-clear
