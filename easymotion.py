@@ -504,6 +504,43 @@ def tmux_move_cursor(pane, line_num, true_col):
     # wrapped *logical* line.
     cmds.append(["tmux", "send-keys", "-X", "-t", pane.pane_id, "start-of-line"])
 
+    # tmux's copy-mode cursor-down maintains an "at end of line" bias via
+    # internal lastcx/lastsx state. When the top of the pane has empty rows,
+    # that state is never primed (cursor-down on an empty row does not
+    # update lastsx), so subsequent cursor-down -N pulls the cursor to the
+    # end of every non-empty row it crosses. Walk down to the first
+    # non-empty row, run start-of-line to set lastsx > 0, then walk back
+    # so the user-visible jump starts from a clean (0, 0) with primed state.
+    first_non_empty = next((i for i, line in enumerate(pane.lines) if line), 0)
+    if first_non_empty > 0:
+        cmds.append(
+            [
+                "tmux",
+                "send-keys",
+                "-X",
+                "-t",
+                pane.pane_id,
+                "-N",
+                str(first_non_empty),
+                "cursor-down",
+            ]
+        )
+        cmds.append(
+            ["tmux", "send-keys", "-X", "-t", pane.pane_id, "start-of-line"]
+        )
+        cmds.append(
+            [
+                "tmux",
+                "send-keys",
+                "-X",
+                "-t",
+                pane.pane_id,
+                "-N",
+                str(first_non_empty),
+                "cursor-up",
+            ]
+        )
+
     if line_num > 0:
         cmds.append(
             [

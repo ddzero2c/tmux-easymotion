@@ -1113,6 +1113,68 @@ def test_cursor_jump_on_wrapped_line(tmux_server):
     )
 
 
+@requires_tmux
+def test_cursor_jump_with_empty_top_rows(tmux_server):
+    """Regression test: cursor-down propagated end-of-line bias on tmux 3.6+.
+
+    When the top rows of the pane are empty, tmux's copy-mode cursor-down
+    never primed its internal lastsx state, so cursor-down -N pulled the
+    cursor to the end of every non-empty row it crossed. With ``pane.lines``
+    populated, ``tmux_move_cursor`` must compensate so the user-visible
+    landing matches (target_line, target_col).
+
+    Setup mimics the real bug: row 0 empty, row N has content with the
+    target column well within line bounds.
+    """
+    pane_id = tmux_server.pane_id
+
+    # Create content where row 0 is blank and a later row has a long line.
+    # Use printf with %s\n so each argument gets its own line; the leading
+    # empty argument produces a blank row 0 (and `clear` first to reset).
+    tmux_server.send_keys(
+        'clear; printf "%s\\n" "" "AAAAAAAAAA" "BBBBBBBBBB" "short"'
+        ' "the_target_line_with_lots_of_content_here"',
+        "Enter",
+    )
+    time.sleep(0.4)
+
+    # Pane is 30x10 from the tmux_server fixture
+    pane = PaneInfo(pane_id, active=True, start_y=0, height=10, start_x=0, width=30)
+    pane.copy_mode = False
+
+    # Capture pane.lines just like easymotion does at runtime
+    capture = subprocess.run(
+        ["tmux", "-L", tmux_server.server_name, "capture-pane", "-p", "-t", pane_id],
+        capture_output=True,
+        text=True,
+    ).stdout
+    pane.lines = capture[:-1].split("\n")[: pane.height]
+
+    # Sanity: the bug only reproduces when there are leading empty rows
+    assert pane.lines[0] == "", (
+        "Test setup precondition: row 0 must be empty to exercise the bug"
+    )
+
+    # Pick a target on the long content row
+    target_line = next(i for i, line in enumerate(pane.lines) if "target_line" in line)
+    target_col = pane.lines[target_line].index("target_line")
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        tmux_move_cursor(pane, target_line, target_col)
+
+    time.sleep(0.1)
+
+    cursor_x, cursor_y = tmux_server.get_cursor_position()
+    assert cursor_y == target_line, (
+        f"Cursor landed on row {cursor_y}, expected {target_line}. "
+        f"This indicates cursor-right wrapped past end of row "
+        f"because cursor-down ended at end-of-line instead of col 0."
+    )
+    assert cursor_x == target_col, (
+        f"Cursor at col {cursor_x}, expected {target_col}"
+    )
+
+
 # =============================================================================
 # Integration Tests - Cross-Pane Jump (Core Feature)
 # =============================================================================
