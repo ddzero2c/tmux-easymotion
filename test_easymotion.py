@@ -1114,7 +1114,7 @@ def test_cursor_jump_on_wrapped_line(tmux_server):
 
 
 @requires_tmux
-def test_cursor_jump_with_empty_top_rows(tmux_server):
+def test_cursor_jump_with_empty_top_rows():
     """Regression test: cursor-down propagated end-of-line bias on tmux 3.6+.
 
     When the top rows of the pane are empty, tmux's copy-mode cursor-down
@@ -1123,56 +1123,82 @@ def test_cursor_jump_with_empty_top_rows(tmux_server):
     populated, ``tmux_move_cursor`` must compensate so the user-visible
     landing matches (target_line, target_col).
 
-    Setup mimics the real bug: row 0 empty, row N has content with the
-    target column well within line bounds.
+    Uses a custom 80x20 server so the user's interactive shell prompt
+    can't wrap into row 0 and defeat the empty-leading-row precondition
+    on slower CI runners.
     """
-    pane_id = tmux_server.pane_id
+    server = TmuxTestServer(width=80, height=20)
+    try:
+        server.start()
+    except RuntimeError as e:
+        pytest.skip(str(e))
 
-    # Create content where row 0 is blank and a later row has a long line.
-    # Use printf with %s\n so each argument gets its own line; the leading
-    # empty argument produces a blank row 0 (and `clear` first to reset).
-    tmux_server.send_keys(
-        'clear; printf "%s\\n" "" "AAAAAAAAAA" "BBBBBBBBBB" "short"'
-        ' "the_target_line_with_lots_of_content_here"',
-        "Enter",
-    )
-    time.sleep(0.4)
+    try:
+        pane_id = server.pane_id
 
-    # Pane is 30x10 from the tmux_server fixture
-    pane = PaneInfo(pane_id, active=True, start_y=0, height=10, start_x=0, width=30)
-    pane.copy_mode = False
+        # Stage content with leading blank line so screen row 0 is empty.
+        # `clear` first wipes any prompt; sleep keeps the pane stable.
+        target_marker = "TARGET_HERE"
+        content_file = f"/tmp/easymotion_test_{uuid.uuid4().hex[:8]}.txt"
+        with open(content_file, "w") as f:
+            f.write(f"\nfirst content\nsecond content\nthird {target_marker} line\n")
 
-    # Capture pane.lines just like easymotion does at runtime
-    capture = subprocess.run(
-        ["tmux", "-L", tmux_server.server_name, "capture-pane", "-p", "-t", pane_id],
-        capture_output=True,
-        text=True,
-    ).stdout
-    pane.lines = capture[:-1].split("\n")[: pane.height]
+        server.send_keys(f"clear; cat {content_file}; sleep 30", "Enter")
 
-    # Sanity: the bug only reproduces when there are leading empty rows
-    assert pane.lines[0] == "", (
-        "Test setup precondition: row 0 must be empty to exercise the bug"
-    )
+        pane = PaneInfo(
+            pane_id, active=True, start_y=0, height=20, start_x=0, width=80
+        )
+        pane.copy_mode = False
 
-    # Pick a target on the long content row
-    target_line = next(i for i, line in enumerate(pane.lines) if "target_line" in line)
-    target_col = pane.lines[target_line].index("target_line")
+        def capture_pane_lines():
+            capture = subprocess.run(
+                [
+                    "tmux", "-L", server.server_name,
+                    "capture-pane", "-p", "-t", pane_id,
+                ],
+                capture_output=True,
+                text=True,
+            ).stdout
+            return capture[:-1].split("\n")[: pane.height]
 
-    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
-        tmux_move_cursor(pane, target_line, target_col)
+        # Poll until the content appears and row 0 is empty. The pane
+        # state isn't observable until the shell finishes processing the
+        # typed command, which is timing-sensitive on slow CI runners.
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            pane.lines = capture_pane_lines()
+            target_visible = any(target_marker in line for line in pane.lines)
+            if target_visible and pane.lines[0] == "":
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError(
+                f"Test setup did not stabilise: pane.lines[0]={pane.lines[0]!r}, "
+                f"target_visible="
+                f"{any(target_marker in line for line in pane.lines)}"
+            )
 
-    time.sleep(0.1)
+        target_line = next(
+            i for i, line in enumerate(pane.lines) if target_marker in line
+        )
+        target_col = pane.lines[target_line].index(target_marker)
 
-    cursor_x, cursor_y = tmux_server.get_cursor_position()
-    assert cursor_y == target_line, (
-        f"Cursor landed on row {cursor_y}, expected {target_line}. "
-        f"This indicates cursor-right wrapped past end of row "
-        f"because cursor-down ended at end-of-line instead of col 0."
-    )
-    assert cursor_x == target_col, (
-        f"Cursor at col {cursor_x}, expected {target_col}"
-    )
+        with patch("easymotion.sh", server.make_sh_for_server()):
+            tmux_move_cursor(pane, target_line, target_col)
+
+        time.sleep(0.1)
+
+        cursor_x, cursor_y = server.get_cursor_position()
+        assert cursor_y == target_line, (
+            f"Cursor landed on row {cursor_y}, expected {target_line}. "
+            f"This indicates cursor-right wrapped past end of row because "
+            f"cursor-down ended at end-of-line instead of col 0."
+        )
+        assert cursor_x == target_col, (
+            f"Cursor at col {cursor_x}, expected {target_col}"
+        )
+    finally:
+        server.stop()
 
 
 # =============================================================================
