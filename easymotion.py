@@ -280,31 +280,9 @@ def calculate_tab_width(position: int, tab_size: int = 8) -> int:
     return tab_size - (position % tab_size)
 
 
-# Emoji-presentation code points that Unicode marks Neutral/Ambiguous
-# (east_asian_width misses them) but terminals render as 2 cells.
-_WIDE_RANGES = (
-    (0x231A, 0x231B),
-    (0x23E9, 0x23FA),
-    (0x25FB, 0x25FE),
-    (0x2600, 0x27BF),
-    (0x1F300, 0x1FAFF),
-)
-
-
-def _is_wide_codepoint(cp: int) -> bool:
-    for lo, hi in _WIDE_RANGES:
-        if cp < lo:
-            return False
-        if cp <= hi:
-            return True
-    return False
-
-
 @functools.lru_cache(maxsize=1024)
 def _char_width_no_tab(char: str) -> int:
-    if unicodedata.east_asian_width(char) in "WF":
-        return 2
-    return 2 if _is_wide_codepoint(ord(char)) else 1
+    return 2 if unicodedata.east_asian_width(char) in "WF" else 1
 
 
 def get_char_width(char: str, position: int = 0) -> int:

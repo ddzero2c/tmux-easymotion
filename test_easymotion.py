@@ -161,22 +161,6 @@ def test_expand_tabs_uses_pane_local_stops(tmux_mode):
     assert _expand_tabs("") == ""
 
 
-def test_get_char_width_emoji():
-    """Unicode marks these Neutral/Ambiguous, but terminals render them as
-    2 cells. They appear in real shell prompts (slashr, claude-code, etc.)
-    and broke pane rendering before the emoji range table was added."""
-    assert get_char_width("⏱") == 2  # U+23F1 stopwatch
-    assert get_char_width("⏵") == 2  # U+23F5 medium right-pointing triangle
-    assert get_char_width("✻") == 2  # U+273B teardrop-spoked asterisk
-    assert get_char_width("⌚") == 2  # U+231A watch
-    assert get_char_width("⏳") == 2  # U+23F3 hourglass with flowing sand
-    assert get_char_width("☀") == 2  # U+2600 black sun with rays
-    assert get_char_width("🎉") == 2  # SMP emoji
-    # Plain ASCII / CJK paths must still work
-    assert get_char_width("a") == 1
-    assert get_char_width("あ") == 2
-
-
 def test_visual_slice_truncates_by_cells_not_chars():
     """line[:pane.width] string-slicing overflows a pane when the line
     contains wide chars. visual_slice truncates by visual cells."""
