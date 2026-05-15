@@ -1266,10 +1266,10 @@ def test_cursor_jump_with_empty_top_rows():
 
 @requires_tmux
 def test_cursor_jump_to_char_after_tab(tmux_server):
-    """Cursor lands on the char tmux renders at the hint position when
-    the line contains a tab — find_matches' visual_col, get_true_position,
-    and tmux_move_cursor's cursor-right must all count consistently
-    against pane.lines (which keeps the literal \\t)."""
+    """End-to-end jump onto a char tmux rendered past a tab. Some tmux
+    builds preserve the literal \\t in capture-pane output (macOS 3.6a)
+    while others pre-expand to spaces (Ubuntu CI); the cursor must land
+    on col 8 either way."""
     pane_id = tmux_server.pane_id
 
     tmux_server.send_keys("printf 'a\\tb\\n'", "Enter")
@@ -1283,18 +1283,18 @@ def test_cursor_jump_to_char_after_tab(tmux_server):
     with patch("easymotion.sh", tmux_server.make_sh_for_server()):
         pane.lines = tmux_capture_pane(pane)
 
-    target_line = next(
-        (i for i, line in enumerate(pane.lines) if line == "a\tb"), None
-    )
-    assert target_line is not None, f"tab line missing: {pane.lines!r}"
-
-    matches = [m for m in find_matches([pane], "b") if m[1] == target_line]
-    assert len(matches) == 1, matches
-    _, _, visual_col = matches[0]
-    assert visual_col == 8  # tmux 3.6+: 'a'(1) + tab(7) → col 8
+    # printf output is the unique line where 'b' renders at col 8 on a
+    # line that starts with 'a' (the typed command line begins with a
+    # space, prompts start with other chars).
+    matches = [
+        (line_num, visual_col)
+        for _, line_num, visual_col in find_matches([pane], "b")
+        if visual_col == 8 and pane.lines[line_num].startswith("a")
+    ]
+    assert len(matches) == 1, f"matches={matches} lines={pane.lines!r}"
+    target_line, visual_col = matches[0]
 
     true_col = get_true_position(pane.lines[target_line], visual_col)
-    assert true_col == 2  # 'b' is at string index 2 (tab counts as 1 char)
 
     with patch("easymotion.sh", tmux_server.make_sh_for_server()):
         tmux_move_cursor(pane, target_line, true_col)
