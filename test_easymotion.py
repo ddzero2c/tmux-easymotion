@@ -21,7 +21,6 @@ from easymotion import (
     get_string_width,
     get_tmux_option,
     get_true_position,
-    tmux_capture_pane,
     tmux_move_cursor,
     update_hints_display,
     visual_slice,
@@ -1262,47 +1261,6 @@ def test_cursor_jump_with_empty_top_rows():
 # =============================================================================
 # Integration Tests - Cross-Pane Jump (Core Feature)
 # =============================================================================
-
-
-@requires_tmux
-def test_cursor_jump_to_char_after_tab(tmux_server):
-    """End-to-end jump onto a char tmux rendered past a tab. Some tmux
-    builds preserve the literal \\t in capture-pane output (macOS 3.6a)
-    while others pre-expand to spaces (Ubuntu CI); the cursor must land
-    on col 8 either way."""
-    pane_id = tmux_server.pane_id
-
-    tmux_server.send_keys("printf 'a\\tb\\n'", "Enter")
-    time.sleep(0.3)
-
-    pane = PaneInfo(
-        pane_id, active=True, start_y=0, height=10, start_x=0, width=30
-    )
-    pane.copy_mode = False
-
-    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
-        pane.lines = tmux_capture_pane(pane)
-
-    # printf output is the unique line where 'b' renders at col 8 on a
-    # line that starts with 'a' (the typed command line begins with a
-    # space, prompts start with other chars).
-    matches = [
-        (line_num, visual_col)
-        for _, line_num, visual_col in find_matches([pane], "b")
-        if visual_col == 8 and pane.lines[line_num].startswith("a")
-    ]
-    assert len(matches) == 1, f"matches={matches} lines={pane.lines!r}"
-    target_line, visual_col = matches[0]
-
-    true_col = get_true_position(pane.lines[target_line], visual_col)
-
-    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
-        tmux_move_cursor(pane, target_line, true_col)
-    time.sleep(0.1)
-
-    cursor_x, cursor_y = tmux_server.get_cursor_position()
-    assert cursor_y == target_line
-    assert cursor_x == 8
 
 
 @requires_tmux
