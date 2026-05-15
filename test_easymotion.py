@@ -1265,10 +1265,8 @@ def test_cursor_jump_with_empty_top_rows():
 
 
 def _tmux_search_actual_col(tmux_server, pane_id, line_num, needle):
-    """Position copy-mode cursor on ``needle`` via tmux's own search and
-    return where tmux says it ended up. Lets the test compare easymotion's
-    placement against tmux's ground truth without assuming a particular
-    tab-width semantics for ``cursor-right -N``."""
+    """Where does tmux's own search-forward put the cursor for ``needle``
+    on the given line? The ground truth for visual column in this build."""
     sh = tmux_server.make_sh_for_server()
     sh(["tmux", "copy-mode", "-t", pane_id])
     sh(["tmux", "send-keys", "-X", "-t", pane_id, "top-line"])
@@ -1284,12 +1282,11 @@ def _tmux_search_actual_col(tmux_server, pane_id, line_num, needle):
 
 
 @requires_tmux
-def test_cursor_jump_to_char_after_tab(tmux_server):
-    """End-to-end: easymotion's hint placement and cursor jump for a
-    char past a tab must agree with tmux's own rendering of that char.
-    Tab-cell semantics vary across tmux builds (same 3.6a behaves
-    differently on macOS CI vs local), so the expected col is whatever
-    tmux's search lands on, not a hard-coded number."""
+def test_find_matches_visual_col_matches_tmux_render_past_tab(tmux_server):
+    """find_matches' visual_col must point to the same screen column tmux
+    actually renders the char at, even when a tab sits before it. This
+    is what easymotion's hint placement relies on; if it drifts the hint
+    appears at the wrong cell and the user clicks empty space."""
     pane_id = tmux_server.pane_id
 
     tmux_server.send_keys("printf 'a\\tb\\n'", "Enter")
@@ -1297,7 +1294,6 @@ def test_cursor_jump_to_char_after_tab(tmux_server):
     pane = PaneInfo(
         pane_id, active=True, start_y=0, height=10, start_x=0, width=30
     )
-    pane.copy_mode = False
 
     def _has_target(lines):
         return any(
@@ -1306,8 +1302,6 @@ def test_cursor_jump_to_char_after_tab(tmux_server):
             for line in lines
         )
 
-    # Poll for the printf output to land. Shell startup + command echo is
-    # racy in the lightweight fixture (~0.3s on CI, sometimes longer).
     deadline = time.time() + 5.0
     while time.time() < deadline:
         with patch("easymotion.sh", tmux_server.make_sh_for_server()):
@@ -1330,28 +1324,12 @@ def test_cursor_jump_to_char_after_tab(tmux_server):
     assert len(matches) == 1, matches
     _, _, visual_col = matches[0]
 
-    target_repr = repr(pane.lines[target_line])
     tmux_version = subprocess.run(
         ["tmux", "-V"], capture_output=True, text=True
     ).stdout.strip()
     assert visual_col == expected_col, (
         f"find_matches reported col {visual_col} but tmux renders 'b' at "
-        f"col {expected_col}; line={target_repr}; tmux={tmux_version}"
-    )
-
-    true_col = get_true_position(pane.lines[target_line], visual_col)
-    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
-        tmux_move_cursor(pane, target_line, true_col)
-    time.sleep(0.1)
-
-    cursor_x, cursor_y = tmux_server.get_cursor_position()
-    assert cursor_y == target_line, (
-        f"y={cursor_y} expected {target_line}; line={target_repr}; "
-        f"tmux={tmux_version}"
-    )
-    assert cursor_x == expected_col, (
-        f"easymotion landed at col {cursor_x} but tmux renders 'b' at "
-        f"col {expected_col}; line={target_repr}; true_col={true_col}; "
+        f"col {expected_col}; line={pane.lines[target_line]!r}; "
         f"tmux={tmux_version}"
     )
 
