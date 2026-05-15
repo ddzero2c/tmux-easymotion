@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/ddzero2c/tmux-easymotion/compare/v1.2.1...v1.2.2) (2026-05-15)
+
+
+### Bug Fixes
+
+* align split-pane redraw with tmux's pane-local tab rendering ([#28](https://github.com/ddzero2c/tmux-easymotion/issues/28)) ([4f5e0eb](https://github.com/ddzero2c/tmux-easymotion/commit/4f5e0eb7ab698d59b8d40730b08a0ff97804979d))
+
 ## [1.2.1](https://github.com/ddzero2c/tmux-easymotion/compare/v1.2.0...v1.2.1) (2026-05-04)
 
 
