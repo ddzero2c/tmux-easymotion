@@ -1,3 +1,4 @@
+import re
 import subprocess
 import time
 import uuid
@@ -1295,23 +1296,19 @@ def test_find_matches_visual_col_matches_tmux_render_past_tab(tmux_server):
         pane_id, active=True, start_y=0, height=10, start_x=0, width=30
     )
 
-    def _has_target(lines):
-        return any(
-            line.startswith("a") and "b" in line
-            and len(line.replace("\t", "").rstrip()) == 2
-            for line in lines
-        )
+    # macOS tmux preserves '\t' in capture-pane; Ubuntu tmux pre-expands
+    # to spaces. Match either form: 'a', whitespace, 'b'.
+    target_pat = re.compile(r"^a[ \t]+b\s*$")
 
     deadline = time.time() + 5.0
     while time.time() < deadline:
         with patch("easymotion.sh", tmux_server.make_sh_for_server()):
             pane.lines = tmux_capture_pane(pane)
-        if _has_target(pane.lines):
+        if any(target_pat.match(line) for line in pane.lines):
             break
         time.sleep(0.1)
     target_line = next(
-        (i for i, line in enumerate(pane.lines) if line.startswith("a")
-         and "b" in line and len(line.replace("\t", "").rstrip()) == 2),
+        (i for i, line in enumerate(pane.lines) if target_pat.match(line)),
         None,
     )
     assert target_line is not None, f"target line missing: {pane.lines!r}"
