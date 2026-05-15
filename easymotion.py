@@ -280,20 +280,38 @@ def calculate_tab_width(position: int, tab_size: int = 8) -> int:
     return tab_size - (position % tab_size)
 
 
+# Emoji-presentation code points that Unicode marks Neutral/Ambiguous
+# (east_asian_width misses them) but terminals render as 2 cells.
+_WIDE_RANGES = (
+    (0x231A, 0x231B),
+    (0x23E9, 0x23FA),
+    (0x25FB, 0x25FE),
+    (0x2600, 0x27BF),
+    (0x1F300, 0x1FAFF),
+)
+
+
+def _is_wide_codepoint(cp: int) -> bool:
+    for lo, hi in _WIDE_RANGES:
+        if cp < lo:
+            return False
+        if cp <= hi:
+            return True
+    return False
+
+
 @functools.lru_cache(maxsize=1024)
 def _char_width_no_tab(char: str) -> int:
-    return 2 if unicodedata.east_asian_width(char) in "WF" else 1
+    if unicodedata.east_asian_width(char) in "WF":
+        return 2
+    return 2 if _is_wide_codepoint(ord(char)) else 1
 
 
 def get_char_width(char: str, position: int = 0) -> int:
-    """Get visual width of a single character.
-
-    ``position`` is only consulted for tab characters; for all other
-    characters the result is cached and independent of column. Tab width
-    depends on the running tmux version: 3.6+ renders tabs at the next
-    multiple of 8 (terminal-correct), older tmux always renders tabs as
-    8 columns. Falling back to the pre-3.6 behaviour when the version
-    cannot be detected keeps existing setups working.
+    """Visual width of ``char``. ``position`` is the pane-local column
+    and is only consulted for tabs — tmux expands tabs pane-locally.
+    Pre-3.6 tmux always renders tabs as 8 cells; 3.6+ goes to the next
+    pane-local 8-col tab stop.
     """
     if char == "\t":
         if _TMUX_HAS_POSITION_AWARE_TABS:
@@ -304,7 +322,7 @@ def get_char_width(char: str, position: int = 0) -> int:
 
 @functools.lru_cache(maxsize=1024)
 def get_string_width(s: str) -> int:
-    """Visual width of a string, accounting for wide characters and tabs."""
+    """Visual width of ``s`` (pane-local, accounting for wide chars and tabs)."""
     visual_pos = 0
     for char in s:
         visual_pos += get_char_width(char, visual_pos)
@@ -320,6 +338,42 @@ def get_true_position(line, target_col):
         visual_pos += char_width
         true_pos += 1
     return true_pos
+
+
+def visual_slice(s: str, max_width: int) -> str:
+    """Truncate/pad ``s`` to exactly ``max_width`` visible cells. Drops
+    overflowing wide chars and pads with spaces. ``s`` must be tab-free."""
+    visual_pos = 0
+    out = []
+    for char in s:
+        w = get_char_width(char, visual_pos)
+        if visual_pos + w > max_width:
+            break
+        out.append(char)
+        visual_pos += w
+    if visual_pos < max_width:
+        out.append(" " * (max_width - visual_pos))
+    return "".join(out)
+
+
+def _expand_tabs(line: str) -> str:
+    """Replace tabs with spaces using tmux's pane-local tab stops, so
+    curses' screen-absolute tab handling can't disagree with tmux's
+    rendering in split panes whose ``start_x`` is not a multiple of 8.
+    """
+    if "\t" not in line:
+        return line
+    out = []
+    pos = 0
+    for ch in line:
+        if ch == "\t":
+            w = get_char_width(ch, pos)
+            out.append(" " * w)
+            pos += w
+        else:
+            out.append(ch)
+            pos += _char_width_no_tab(ch)
+    return "".join(out)
 
 
 def sh(cmd: list) -> str:
@@ -487,7 +541,8 @@ def tmux_capture_pane(pane):
         end_pos = -(pane.scroll_position - pane.height + 1)
         cmd.extend(["-S", str(-pane.scroll_position), "-E", str(end_pos)])
 
-    # Directly split and limit lines
+    # Keep literal tabs: cursor-right steps through tmux's cell buffer
+    # one char at a time, so true_col must count against this same string.
     return sh(cmd)[:-1].split("\n")[: pane.height]
 
 
@@ -598,7 +653,6 @@ def init_panes():
     """Initialize pane information with optimized info gathering"""
     panes = []
     max_x = 0
-    padding_cache = {}
 
     # Batch get all pane info
     panes_info = get_initial_tmux_info()
@@ -611,14 +665,13 @@ def init_panes():
             max_x = max(max_x, pane.start_x + pane.width)
             panes.append(pane)
 
-    return panes, max_x, padding_cache
+    return panes, max_x
 
 
 @perf_timer()
 def draw_all_panes(
     panes,
     max_x,
-    padding_cache,
     terminal_height,
     screen,
     vertical_border: str = "│",
@@ -630,15 +683,11 @@ def draw_all_panes(
     for pane in sorted_panes:
         visible_height = min(pane.height, terminal_height - pane.start_y)
 
-        # Draw content
+        # Pre-expand tabs so curses can't re-expand them against screen-
+        # absolute stops and shift content in non-aligned split panes.
         for y, line in enumerate(pane.lines[:visible_height]):
-            visual_width = get_string_width(line)
-            if visual_width < pane.width:
-                padding_size = pane.width - visual_width
-                if padding_size not in padding_cache:
-                    padding_cache[padding_size] = " " * padding_size
-                line = line + padding_cache[padding_size]
-            screen.addstr(pane.start_y + y, pane.start_x, line[: pane.width])
+            sliced = visual_slice(_expand_tabs(line), pane.width)
+            screen.addstr(pane.start_y + y, pane.start_x, sliced)
 
         # Draw vertical borders
         if pane.start_x + pane.width < max_x:
@@ -843,7 +892,7 @@ def draw_all_hints(positions, terminal_height, screen):
 @perf_timer("Total execution")
 def main(screen: Screen, config: Config):
     setup_logging(config.use_curses)
-    panes, max_x, padding_cache = init_panes()
+    panes, max_x = init_panes()
 
     # Get motion type from command line argument
     motion_type = sys.argv[1] if len(sys.argv) > 1 else "s"
@@ -925,7 +974,6 @@ def main(screen: Screen, config: Config):
     draw_all_panes(
         panes,
         max_x,
-        padding_cache,
         terminal_height,
         screen,
         config.vertical_border,

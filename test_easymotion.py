@@ -10,6 +10,7 @@ from easymotion import (
     Config,
     PaneInfo,
     _detect_tmux_version,
+    _expand_tabs,
     _get_all_tmux_options,
     assign_hints_by_distance,
     calculate_tab_width,
@@ -20,8 +21,10 @@ from easymotion import (
     get_string_width,
     get_tmux_option,
     get_true_position,
+    tmux_capture_pane,
     tmux_move_cursor,
     update_hints_display,
+    visual_slice,
 )
 
 
@@ -133,6 +136,61 @@ def test_find_matches_visual_col_after_tab(tmux_mode):
 
     expected = 8 if tmux_mode >= (3, 6) else 9
     assert visual_col == expected
+
+
+def test_expand_tabs_uses_pane_local_stops(tmux_mode):
+    """Tabs must be expanded against pane-local tab stops so that, after
+    expansion, the line renders identically in any pane regardless of its
+    screen position. Otherwise curses (screen-absolute tab stops) would
+    disagree with tmux (pane-local) in split panes."""
+    if tmux_mode >= (3, 6):
+        # Position-aware: tab from col 0 → col 8 (8 cells).
+        assert _expand_tabs("\t") == " " * 8
+        # Tab from col 1 → col 8 (7 cells).
+        assert _expand_tabs("a\t") == "a" + " " * 7
+        # 7 chars then tab → col 8 (1 cell).
+        assert _expand_tabs("1234567\t") == "1234567 "
+        # Two tabs: 0→8 (8 cells), 9→16 (7 cells).
+        assert _expand_tabs("a\tb\t") == "a" + " " * 7 + "b" + " " * 7
+    else:
+        # Pre-3.6 tmux: every tab is 8 cells regardless of position.
+        assert _expand_tabs("\t") == " " * 8
+        assert _expand_tabs("a\t") == "a" + " " * 8
+        assert _expand_tabs("1234567\t") == "1234567" + " " * 8
+    # No tabs → identity.
+    assert _expand_tabs("hello") == "hello"
+    assert _expand_tabs("") == ""
+
+
+def test_get_char_width_emoji():
+    """Unicode marks these Neutral/Ambiguous, but terminals render them as
+    2 cells. They appear in real shell prompts (slashr, claude-code, etc.)
+    and broke pane rendering before the emoji range table was added."""
+    assert get_char_width("⏱") == 2  # U+23F1 stopwatch
+    assert get_char_width("⏵") == 2  # U+23F5 medium right-pointing triangle
+    assert get_char_width("✻") == 2  # U+273B teardrop-spoked asterisk
+    assert get_char_width("⌚") == 2  # U+231A watch
+    assert get_char_width("⏳") == 2  # U+23F3 hourglass with flowing sand
+    assert get_char_width("☀") == 2  # U+2600 black sun with rays
+    assert get_char_width("🎉") == 2  # SMP emoji
+    # Plain ASCII / CJK paths must still work
+    assert get_char_width("a") == 1
+    assert get_char_width("あ") == 2
+
+
+def test_visual_slice_truncates_by_cells_not_chars():
+    """line[:pane.width] string-slicing overflows a pane when the line
+    contains wide chars. visual_slice truncates by visual cells."""
+    # 5 wide chars = 10 cells; truncate to 6 cells → keep 3 chars + pad.
+    assert visual_slice("あいうえお", 6) == "あいう"
+    # Truncating mid-wide-char drops the char and pads with a space.
+    assert visual_slice("あいうえお", 5) == "あい "
+    # Short lines get padded on the right.
+    assert visual_slice("ab", 5) == "ab   "
+    # Empty input pads to full width.
+    assert visual_slice("", 4) == "    "
+    # Pure ASCII slice behaves like the old string-index version.
+    assert visual_slice("hello world", 5) == "hello"
 
 
 def test_calculate_tab_width():
@@ -1204,6 +1262,47 @@ def test_cursor_jump_with_empty_top_rows():
 # =============================================================================
 # Integration Tests - Cross-Pane Jump (Core Feature)
 # =============================================================================
+
+
+@requires_tmux
+def test_cursor_jump_to_char_after_tab(tmux_server):
+    """Cursor lands on the char tmux renders at the hint position when
+    the line contains a tab — find_matches' visual_col, get_true_position,
+    and tmux_move_cursor's cursor-right must all count consistently
+    against pane.lines (which keeps the literal \\t)."""
+    pane_id = tmux_server.pane_id
+
+    tmux_server.send_keys("printf 'a\\tb\\n'", "Enter")
+    time.sleep(0.3)
+
+    pane = PaneInfo(
+        pane_id, active=True, start_y=0, height=10, start_x=0, width=30
+    )
+    pane.copy_mode = False
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane.lines = tmux_capture_pane(pane)
+
+    target_line = next(
+        (i for i, line in enumerate(pane.lines) if line == "a\tb"), None
+    )
+    assert target_line is not None, f"tab line missing: {pane.lines!r}"
+
+    matches = [m for m in find_matches([pane], "b") if m[1] == target_line]
+    assert len(matches) == 1, matches
+    _, _, visual_col = matches[0]
+    assert visual_col == 8  # tmux 3.6+: 'a'(1) + tab(7) → col 8
+
+    true_col = get_true_position(pane.lines[target_line], visual_col)
+    assert true_col == 2  # 'b' is at string index 2 (tab counts as 1 char)
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        tmux_move_cursor(pane, target_line, true_col)
+    time.sleep(0.1)
+
+    cursor_x, cursor_y = tmux_server.get_cursor_position()
+    assert cursor_y == target_line
+    assert cursor_x == 8
 
 
 @requires_tmux
