@@ -1264,50 +1264,94 @@ def test_cursor_jump_with_empty_top_rows():
 # =============================================================================
 
 
+def _tmux_search_actual_col(tmux_server, pane_id, line_num, needle):
+    """Position copy-mode cursor on ``needle`` via tmux's own search and
+    return where tmux says it ended up. Lets the test compare easymotion's
+    placement against tmux's ground truth without assuming a particular
+    tab-width semantics for ``cursor-right -N``."""
+    sh = tmux_server.make_sh_for_server()
+    sh(["tmux", "copy-mode", "-t", pane_id])
+    sh(["tmux", "send-keys", "-X", "-t", pane_id, "top-line"])
+    sh(["tmux", "send-keys", "-X", "-t", pane_id, "start-of-line"])
+    if line_num:
+        sh(["tmux", "send-keys", "-X", "-t", pane_id, "-N", str(line_num),
+            "cursor-down"])
+    sh(["tmux", "send-keys", "-X", "-t", pane_id, "search-forward-text", needle])
+    time.sleep(0.1)
+    x, _ = tmux_server.get_cursor_position()
+    sh(["tmux", "send-keys", "-X", "-t", pane_id, "cancel"])
+    return x
+
+
 @requires_tmux
 def test_cursor_jump_to_char_after_tab(tmux_server):
-    """End-to-end jump onto a char tmux rendered past a tab. Some tmux
-    builds preserve the literal \\t in capture-pane output (macOS 3.6a)
-    while others pre-expand to spaces (Ubuntu 3.4); the cursor must
-    land on col 8 either way."""
+    """End-to-end: easymotion's hint placement and cursor jump for a
+    char past a tab must agree with tmux's own rendering of that char.
+    Tab-cell semantics vary across tmux builds (same 3.6a behaves
+    differently on macOS CI vs local), so the expected col is whatever
+    tmux's search lands on, not a hard-coded number."""
     pane_id = tmux_server.pane_id
 
     tmux_server.send_keys("printf 'a\\tb\\n'", "Enter")
-    time.sleep(0.3)
 
     pane = PaneInfo(
         pane_id, active=True, start_y=0, height=10, start_x=0, width=30
     )
     pane.copy_mode = False
 
-    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
-        pane.lines = tmux_capture_pane(pane)
+    def _has_target(lines):
+        return any(
+            line.startswith("a") and "b" in line
+            and len(line.replace("\t", "").rstrip()) == 2
+            for line in lines
+        )
 
-    matches = [
-        (line_num, visual_col)
-        for _, line_num, visual_col in find_matches([pane], "b")
-        if visual_col == 8 and pane.lines[line_num].startswith("a")
-    ]
-    assert len(matches) == 1, f"matches={matches} lines={pane.lines!r}"
-    target_line, visual_col = matches[0]
+    # Poll for the printf output to land. Shell startup + command echo is
+    # racy in the lightweight fixture (~0.3s on CI, sometimes longer).
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+            pane.lines = tmux_capture_pane(pane)
+        if _has_target(pane.lines):
+            break
+        time.sleep(0.1)
+    target_line = next(
+        (i for i, line in enumerate(pane.lines) if line.startswith("a")
+         and "b" in line and len(line.replace("\t", "").rstrip()) == 2),
+        None,
+    )
+    assert target_line is not None, f"target line missing: {pane.lines!r}"
+
+    expected_col = _tmux_search_actual_col(
+        tmux_server, pane_id, target_line, "b"
+    )
+
+    matches = [m for m in find_matches([pane], "b") if m[1] == target_line]
+    assert len(matches) == 1, matches
+    _, _, visual_col = matches[0]
 
     target_repr = repr(pane.lines[target_line])
-    true_col = get_true_position(pane.lines[target_line], visual_col)
+    tmux_version = subprocess.run(
+        ["tmux", "-V"], capture_output=True, text=True
+    ).stdout.strip()
+    assert visual_col == expected_col, (
+        f"find_matches reported col {visual_col} but tmux renders 'b' at "
+        f"col {expected_col}; line={target_repr}; tmux={tmux_version}"
+    )
 
+    true_col = get_true_position(pane.lines[target_line], visual_col)
     with patch("easymotion.sh", tmux_server.make_sh_for_server()):
         tmux_move_cursor(pane, target_line, true_col)
     time.sleep(0.1)
 
-    tmux_version = subprocess.run(
-        ["tmux", "-V"], capture_output=True, text=True
-    ).stdout.strip()
     cursor_x, cursor_y = tmux_server.get_cursor_position()
     assert cursor_y == target_line, (
         f"y={cursor_y} expected {target_line}; line={target_repr}; "
-        f"true_col={true_col}; tmux={tmux_version}"
+        f"tmux={tmux_version}"
     )
-    assert cursor_x == 8, (
-        f"x={cursor_x} expected 8; line={target_repr}; true_col={true_col}; "
+    assert cursor_x == expected_col, (
+        f"easymotion landed at col {cursor_x} but tmux renders 'b' at "
+        f"col {expected_col}; line={target_repr}; true_col={true_col}; "
         f"tmux={tmux_version}"
     )
 
