@@ -10,6 +10,7 @@ from easymotion import (
     Config,
     PaneInfo,
     _detect_tmux_version,
+    _expand_tabs,
     _get_all_tmux_options,
     assign_hints_by_distance,
     calculate_tab_width,
@@ -22,6 +23,7 @@ from easymotion import (
     get_true_position,
     tmux_move_cursor,
     update_hints_display,
+    visual_slice,
 )
 
 
@@ -133,6 +135,45 @@ def test_find_matches_visual_col_after_tab(tmux_mode):
 
     expected = 8 if tmux_mode >= (3, 6) else 9
     assert visual_col == expected
+
+
+def test_expand_tabs_uses_pane_local_stops(tmux_mode):
+    """Tabs must be expanded against pane-local tab stops so that, after
+    expansion, the line renders identically in any pane regardless of its
+    screen position. Otherwise curses (screen-absolute tab stops) would
+    disagree with tmux (pane-local) in split panes."""
+    if tmux_mode >= (3, 6):
+        # Position-aware: tab from col 0 → col 8 (8 cells).
+        assert _expand_tabs("\t") == " " * 8
+        # Tab from col 1 → col 8 (7 cells).
+        assert _expand_tabs("a\t") == "a" + " " * 7
+        # 7 chars then tab → col 8 (1 cell).
+        assert _expand_tabs("1234567\t") == "1234567 "
+        # Two tabs: 0→8 (8 cells), 9→16 (7 cells).
+        assert _expand_tabs("a\tb\t") == "a" + " " * 7 + "b" + " " * 7
+    else:
+        # Pre-3.6 tmux: every tab is 8 cells regardless of position.
+        assert _expand_tabs("\t") == " " * 8
+        assert _expand_tabs("a\t") == "a" + " " * 8
+        assert _expand_tabs("1234567\t") == "1234567" + " " * 8
+    # No tabs → identity.
+    assert _expand_tabs("hello") == "hello"
+    assert _expand_tabs("") == ""
+
+
+def test_visual_slice_truncates_by_cells_not_chars():
+    """line[:pane.width] string-slicing overflows a pane when the line
+    contains wide chars. visual_slice truncates by visual cells."""
+    # 5 wide chars = 10 cells; truncate to 6 cells → keep 3 chars + pad.
+    assert visual_slice("あいうえお", 6) == "あいう"
+    # Truncating mid-wide-char drops the char and pads with a space.
+    assert visual_slice("あいうえお", 5) == "あい "
+    # Short lines get padded on the right.
+    assert visual_slice("ab", 5) == "ab   "
+    # Empty input pads to full width.
+    assert visual_slice("", 4) == "    "
+    # Pure ASCII slice behaves like the old string-index version.
+    assert visual_slice("hello world", 5) == "hello"
 
 
 def test_calculate_tab_width():
