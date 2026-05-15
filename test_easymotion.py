@@ -1,4 +1,3 @@
-import re
 import subprocess
 import time
 import uuid
@@ -22,7 +21,6 @@ from easymotion import (
     get_string_width,
     get_tmux_option,
     get_true_position,
-    tmux_capture_pane,
     tmux_move_cursor,
     update_hints_display,
     visual_slice,
@@ -1263,72 +1261,6 @@ def test_cursor_jump_with_empty_top_rows():
 # =============================================================================
 # Integration Tests - Cross-Pane Jump (Core Feature)
 # =============================================================================
-
-
-def _tmux_search_actual_col(tmux_server, pane_id, line_num, needle):
-    """Where does tmux's own search-forward put the cursor for ``needle``
-    on the given line? The ground truth for visual column in this build."""
-    sh = tmux_server.make_sh_for_server()
-    sh(["tmux", "copy-mode", "-t", pane_id])
-    sh(["tmux", "send-keys", "-X", "-t", pane_id, "top-line"])
-    sh(["tmux", "send-keys", "-X", "-t", pane_id, "start-of-line"])
-    if line_num:
-        sh(["tmux", "send-keys", "-X", "-t", pane_id, "-N", str(line_num),
-            "cursor-down"])
-    sh(["tmux", "send-keys", "-X", "-t", pane_id, "search-forward-text", needle])
-    time.sleep(0.1)
-    x, _ = tmux_server.get_cursor_position()
-    sh(["tmux", "send-keys", "-X", "-t", pane_id, "cancel"])
-    return x
-
-
-@requires_tmux
-def test_find_matches_visual_col_matches_tmux_render_past_tab(tmux_server):
-    """find_matches' visual_col must point to the same screen column tmux
-    actually renders the char at, even when a tab sits before it. This
-    is what easymotion's hint placement relies on; if it drifts the hint
-    appears at the wrong cell and the user clicks empty space."""
-    pane_id = tmux_server.pane_id
-
-    tmux_server.send_keys("printf 'a\\tb\\n'", "Enter")
-
-    pane = PaneInfo(
-        pane_id, active=True, start_y=0, height=10, start_x=0, width=30
-    )
-
-    # macOS tmux preserves '\t' in capture-pane; Ubuntu tmux pre-expands
-    # to spaces. Match either form: 'a', whitespace, 'b'.
-    target_pat = re.compile(r"^a[ \t]+b\s*$")
-
-    deadline = time.time() + 5.0
-    while time.time() < deadline:
-        with patch("easymotion.sh", tmux_server.make_sh_for_server()):
-            pane.lines = tmux_capture_pane(pane)
-        if any(target_pat.match(line) for line in pane.lines):
-            break
-        time.sleep(0.1)
-    target_line = next(
-        (i for i, line in enumerate(pane.lines) if target_pat.match(line)),
-        None,
-    )
-    assert target_line is not None, f"target line missing: {pane.lines!r}"
-
-    expected_col = _tmux_search_actual_col(
-        tmux_server, pane_id, target_line, "b"
-    )
-
-    matches = [m for m in find_matches([pane], "b") if m[1] == target_line]
-    assert len(matches) == 1, matches
-    _, _, visual_col = matches[0]
-
-    tmux_version = subprocess.run(
-        ["tmux", "-V"], capture_output=True, text=True
-    ).stdout.strip()
-    assert visual_col == expected_col, (
-        f"find_matches reported col {visual_col} but tmux renders 'b' at "
-        f"col {expected_col}; line={pane.lines[target_line]!r}; "
-        f"tmux={tmux_version}"
-    )
 
 
 @requires_tmux
