@@ -1416,6 +1416,9 @@ def test_config_from_tmux(tmux_server):
     set_option("@easymotion-vertical-border", "|")
     set_option("@easymotion-horizontal-border", "-")
     set_option("@easymotion-use-curses", "true")
+    set_option("@easymotion-hint1-fg", "1;34")
+    set_option("@easymotion-hint2-fg", "38;5;208")
+    set_option("@easymotion-dim", "2;90")
 
     original_run = subprocess.run
 
@@ -1435,6 +1438,9 @@ def test_config_from_tmux(tmux_server):
     assert config.vertical_border == "|"
     assert config.horizontal_border == "-"
     assert config.use_curses is True
+    assert config.hint1_fg == "1;34"
+    assert config.hint2_fg == "38;5;208"
+    assert config.dim == "2;90"
 
     # Now test with false values
     _get_all_tmux_options.cache_clear()
@@ -1516,3 +1522,33 @@ def test_get_tmux_option_with_quotes(tmux_server):
         result = get_tmux_option("@easymotion-test-quotes", "default")
 
     assert result == test_value, f"Expected '{test_value}', got '{result}'"
+
+
+def test_ansi_sequence_custom_colors():
+    """AnsiSequence builds escape sequences from configured SGR codes."""
+    config = Config(hint1_fg="1;34", hint2_fg="38;5;208", dim="2;90")
+    screen = easymotion.AnsiSequence(config)
+    assert screen.HINT1 == "\033[1;34m"
+    assert screen.HINT2 == "\033[38;5;208m"
+    assert screen.DIM == "\033[2;90m"
+
+
+def test_ansi_sequence_default_colors():
+    """AnsiSequence falls back to the default palette without config."""
+    screen = easymotion.AnsiSequence()
+    assert screen.HINT1 == "\033[1;31m"
+    assert screen.HINT2 == "\033[1;32m"
+    assert screen.DIM == "\033[2m"
+
+
+def test_sgr_to_curses_parser():
+    """_sgr_to_curses maps SGR codes to (foreground, attribute) pairs."""
+    import curses
+
+    assert easymotion._sgr_to_curses("1;31") == (curses.COLOR_RED, curses.A_BOLD)
+    assert easymotion._sgr_to_curses("38;5;208") == (208, 0)
+    assert easymotion._sgr_to_curses("2") == (-1, curses.A_DIM)
+    # bright color (90-97) implies bold
+    fg, attr = easymotion._sgr_to_curses("90")
+    assert fg == curses.COLOR_BLACK
+    assert attr & curses.A_BOLD
