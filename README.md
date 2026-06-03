@@ -46,6 +46,9 @@ Press `prefix` + `I` to install
 | `@easymotion-vertical-border` | `│` | Vertical border character |
 | `@easymotion-horizontal-border` | `─` | Horizontal border character |
 | `@easymotion-use-curses` | `false` | Use curses instead of ANSI sequences |
+| `@easymotion-hint1-fg` | `1;31` | SGR color code for the first hint character (bold red) |
+| `@easymotion-hint2-fg` | `1;32` | SGR color code for the second hint character (bold green) |
+| `@easymotion-dim` | `2` | SGR color code for the dimmed background text |
 | `@easymotion-debug` | `false` | Debug logging to ~/easymotion.log |
 | `@easymotion-perf` | `false` | Performance logging to ~/easymotion.log |
 
@@ -57,6 +60,12 @@ set -g @easymotion-s2 'f'
 set -g @easymotion-hints 'asdfghjkl;'
 set -g @easymotion-case-sensitive 'true'
 set -g @easymotion-smartsign 'true'
+
+# Custom colors (standard SGR codes: "1" bold, "4" underline,
+# "31"-"37" / "90"-"97" basic colors, "38;5;N" for 256-color)
+set -g @easymotion-hint1-fg '1;38;5;208'  # bold orange
+set -g @easymotion-hint2-fg '1;38;5;33'   # bold blue
+set -g @easymotion-dim '2;90'             # dim grey
 ```
 
 

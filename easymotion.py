@@ -90,6 +90,9 @@ class Config:
         default="─", metadata={"opt": "@easymotion-horizontal-border"}
     )
     use_curses: bool = field(default=False, metadata={"opt": "@easymotion-use-curses"})
+    hint1_fg: str = field(default="1;31", metadata={"opt": "@easymotion-hint1-fg"})
+    hint2_fg: str = field(default="1;32", metadata={"opt": "@easymotion-hint2-fg"})
+    dim: str = field(default="2", metadata={"opt": "@easymotion-dim"})
 
     @classmethod
     def from_tmux(cls) -> "Config":
@@ -149,9 +152,12 @@ class AnsiSequence(Screen):
     HIDE_CURSOR = f"{ESC}[?25l"
     SHOW_CURSOR = f"{ESC}[?25h"
     RESET = f"{ESC}[0m"
-    DIM = f"{ESC}[2m"
-    RED = f"{ESC}[1;31m"
-    GREEN = f"{ESC}[1;32m"
+
+    def __init__(self, config: Optional["Config"] = None):
+        config = config or Config()
+        self.DIM = f"{self.ESC}[{config.dim}m"
+        self.HINT1 = f"{self.ESC}[{config.hint1_fg}m"
+        self.HINT2 = f"{self.ESC}[{config.hint2_fg}m"
 
     def init(self):
         sys.stdout.write(self.HIDE_CURSOR)
@@ -166,9 +172,9 @@ class AnsiSequence(Screen):
         if attr == self.A_DIM:
             return self.DIM
         elif attr == self.A_HINT1:
-            return self.RED
+            return self.HINT1
         elif attr == self.A_HINT2:
-            return self.GREEN
+            return self.HINT2
         return ""
 
     def addstr(self, y: int, x: int, text: str, attr=0):
@@ -185,16 +191,91 @@ class AnsiSequence(Screen):
         sys.stdout.write(self.CLEAR)
 
 
+_SGR_BASE_COLORS = {
+    30: curses.COLOR_BLACK,
+    31: curses.COLOR_RED,
+    32: curses.COLOR_GREEN,
+    33: curses.COLOR_YELLOW,
+    34: curses.COLOR_BLUE,
+    35: curses.COLOR_MAGENTA,
+    36: curses.COLOR_CYAN,
+    37: curses.COLOR_WHITE,
+}
+
+
+def _sgr_to_curses(codes: str):
+    """Parse an SGR code string (e.g. "1;31" or "38;5;208") into a
+    (foreground_color, attribute_flags) tuple for curses. Returns -1 for the
+    foreground when no color is specified (keeps the terminal default).
+
+    The curses backend supports a subset of SGR: bold (1), dim (2), underline
+    (4), the basic (30-37) and bright (90-97) foregrounds, and 256-color
+    foregrounds (38;5;N). Truecolor (38;2;r;g;b) and background codes are
+    skipped; the default ANSI backend honors any SGR string."""
+    fg = -1
+    attr = 0
+    parts = [p for p in codes.split(";") if p != ""]
+    i = 0
+    while i < len(parts):
+        try:
+            n = int(parts[i])
+        except ValueError:
+            i += 1
+            continue
+        if n == 1:
+            attr |= curses.A_BOLD
+        elif n == 2:
+            attr |= curses.A_DIM
+        elif n == 4:
+            attr |= curses.A_UNDERLINE
+        elif n in _SGR_BASE_COLORS:
+            fg = _SGR_BASE_COLORS[n]
+        elif 90 <= n <= 97:
+            fg = _SGR_BASE_COLORS[n - 60]
+            attr |= curses.A_BOLD
+        elif n == 38 and i + 1 < len(parts) and parts[i + 1] == "5":
+            if i + 2 < len(parts):
+                try:
+                    fg = int(parts[i + 2])
+                except ValueError:
+                    pass
+            i += 2
+        elif n == 38 and i + 1 < len(parts) and parts[i + 1] == "2":
+            i += 4
+        i += 1
+    return fg, attr
+
+
 class Curses(Screen):
-    def __init__(self):
+    def __init__(self, config: Optional["Config"] = None):
         self.stdscr: Optional[curses.window] = None
+        self.config = config or Config()
+
+    @staticmethod
+    def _init_pair(pair: int, fg: int):
+        """Define a foreground/default color pair, falling back to the
+        terminal default when fg is out of range for this terminal (e.g. a
+        256-color code on an 8-color TERM, which would otherwise raise)."""
+        if not 0 <= fg < curses.COLORS:
+            fg = -1
+        try:
+            curses.init_pair(pair, fg, -1)
+        except (curses.error, ValueError):
+            pass
 
     def init(self):
         self.stdscr = curses.initscr()
         curses.start_color()
         curses.use_default_colors()
-        curses.init_pair(1, curses.COLOR_RED, -1)
-        curses.init_pair(2, curses.COLOR_GREEN, -1)
+        fg1, flags1 = _sgr_to_curses(self.config.hint1_fg)
+        fg2, flags2 = _sgr_to_curses(self.config.hint2_fg)
+        fgd, flagsd = _sgr_to_curses(self.config.dim)
+        self._init_pair(1, fg1)
+        self._init_pair(2, fg2)
+        self._init_pair(3, fgd)
+        self.attr_hint1 = curses.color_pair(1) | flags1
+        self.attr_hint2 = curses.color_pair(2) | flags2
+        self.attr_dim = curses.color_pair(3) | flagsd
         curses.noecho()
         curses.cbreak()
         self.stdscr.keypad(True)
@@ -209,11 +290,11 @@ class Curses(Screen):
 
     def transform_attr(self, attr):
         if attr == self.A_DIM:
-            return curses.A_DIM
+            return self.attr_dim
         elif attr == self.A_HINT1:
-            return curses.color_pair(1) | curses.A_BOLD
+            return self.attr_hint1
         elif attr == self.A_HINT2:
-            return curses.color_pair(2) | curses.A_BOLD
+            return self.attr_hint2
         return curses.A_NORMAL
 
     def addstr(self, y: int, x: int, text: str, attr=0):
@@ -985,9 +1066,9 @@ def main(screen: Screen, config: Config):
 
 if __name__ == "__main__":
     config = Config.from_tmux()
-    screen: Screen = Curses() if config.use_curses else AnsiSequence()
-    screen.init()
+    screen: Screen = Curses(config) if config.use_curses else AnsiSequence(config)
     try:
+        screen.init()
         main(screen, config)
     except KeyboardInterrupt:
         logging.info("Operation cancelled by user")
