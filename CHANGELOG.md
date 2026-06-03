@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/ddzero2c/tmux-easymotion/compare/v1.2.2...v1.3.0) (2026-06-03)
+
+
+### Features
+
+* custom hint colors via SGR config options ([#31](https://github.com/ddzero2c/tmux-easymotion/issues/31)) ([0cf89be](https://github.com/ddzero2c/tmux-easymotion/commit/0cf89be07124c282bf2bae4ab2e2f5b0b01b0229))
+
 ## [1.2.2](https://github.com/ddzero2c/tmux-easymotion/compare/v1.2.1...v1.2.2) (2026-05-15)
 
 
