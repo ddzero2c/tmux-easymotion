@@ -208,10 +208,10 @@ def _sgr_to_curses(codes: str):
     (foreground_color, attribute_flags) tuple for curses. Returns -1 for the
     foreground when no color is specified (keeps the terminal default).
 
-    The curses backend supports a subset of SGR: bold (1), dim (2), the basic
-    (30-37) and bright (90-97) foregrounds, and 256-color foregrounds
-    (38;5;N). Truecolor (38;2;r;g;b) and background codes are ignored; the
-    default ANSI backend honors any SGR string."""
+    The curses backend supports a subset of SGR: bold (1), dim (2), underline
+    (4), the basic (30-37) and bright (90-97) foregrounds, and 256-color
+    foregrounds (38;5;N). Truecolor (38;2;r;g;b) and background codes are
+    skipped; the default ANSI backend honors any SGR string."""
     fg = -1
     attr = 0
     parts = [p for p in codes.split(";") if p != ""]
@@ -226,17 +226,22 @@ def _sgr_to_curses(codes: str):
             attr |= curses.A_BOLD
         elif n == 2:
             attr |= curses.A_DIM
+        elif n == 4:
+            attr |= curses.A_UNDERLINE
         elif n in _SGR_BASE_COLORS:
             fg = _SGR_BASE_COLORS[n]
         elif 90 <= n <= 97:
             fg = _SGR_BASE_COLORS[n - 60]
             attr |= curses.A_BOLD
-        elif n == 38 and i + 2 < len(parts) and parts[i + 1] == "5":
-            try:
-                fg = int(parts[i + 2])
-            except ValueError:
-                pass
+        elif n == 38 and i + 1 < len(parts) and parts[i + 1] == "5":
+            if i + 2 < len(parts):
+                try:
+                    fg = int(parts[i + 2])
+                except ValueError:
+                    pass
             i += 2
+        elif n == 38 and i + 1 < len(parts) and parts[i + 1] == "2":
+            i += 4
         i += 1
     return fg, attr
 
@@ -246,18 +251,31 @@ class Curses(Screen):
         self.stdscr: Optional[curses.window] = None
         self.config = config or Config()
 
+    @staticmethod
+    def _init_pair(pair: int, fg: int):
+        """Define a foreground/default color pair, falling back to the
+        terminal default when fg is out of range for this terminal (e.g. a
+        256-color code on an 8-color TERM, which would otherwise raise)."""
+        if not 0 <= fg < curses.COLORS:
+            fg = -1
+        try:
+            curses.init_pair(pair, fg, -1)
+        except (curses.error, ValueError):
+            pass
+
     def init(self):
         self.stdscr = curses.initscr()
         curses.start_color()
         curses.use_default_colors()
         fg1, flags1 = _sgr_to_curses(self.config.hint1_fg)
         fg2, flags2 = _sgr_to_curses(self.config.hint2_fg)
-        _, flagsd = _sgr_to_curses(self.config.dim)
-        curses.init_pair(1, fg1, -1)
-        curses.init_pair(2, fg2, -1)
+        fgd, flagsd = _sgr_to_curses(self.config.dim)
+        self._init_pair(1, fg1)
+        self._init_pair(2, fg2)
+        self._init_pair(3, fgd)
         self.attr_hint1 = curses.color_pair(1) | flags1
         self.attr_hint2 = curses.color_pair(2) | flags2
-        self.attr_dim = flagsd
+        self.attr_dim = curses.color_pair(3) | flagsd
         curses.noecho()
         curses.cbreak()
         self.stdscr.keypad(True)
@@ -1049,8 +1067,8 @@ def main(screen: Screen, config: Config):
 if __name__ == "__main__":
     config = Config.from_tmux()
     screen: Screen = Curses(config) if config.use_curses else AnsiSequence(config)
-    screen.init()
     try:
+        screen.init()
         main(screen, config)
     except KeyboardInterrupt:
         logging.info("Operation cancelled by user")

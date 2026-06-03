@@ -1548,6 +1548,12 @@ def test_sgr_to_curses_parser():
     assert easymotion._sgr_to_curses("1;31") == (curses.COLOR_RED, curses.A_BOLD)
     assert easymotion._sgr_to_curses("38;5;208") == (208, 0)
     assert easymotion._sgr_to_curses("2") == (-1, curses.A_DIM)
+    assert easymotion._sgr_to_curses("4;34") == (curses.COLOR_BLUE, curses.A_UNDERLINE)
+    assert easymotion._sgr_to_curses("2;90") == (
+        curses.COLOR_BLACK,
+        curses.A_DIM | curses.A_BOLD,
+    )
+    assert easymotion._sgr_to_curses("38;2;255;128;0") == (-1, 0)
     # bright color (90-97) implies bold
     fg, attr = easymotion._sgr_to_curses("90")
     assert fg == curses.COLOR_BLACK
