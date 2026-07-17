@@ -187,6 +187,11 @@ def test_expand_tabs_uses_pane_local_stops(tmux_mode):
 ESC = "\x1b"
 
 
+def _strip_escapes(line):
+    """Remove all SGR sequences (test-side width/content checks)."""
+    return easymotion._SGR_RE.sub("", line)
+
+
 def test_dim_preserving():
     from easymotion import _dim_preserving
 
@@ -221,7 +226,7 @@ def test_sanitize_capture():
 def test_color_line_alignment_invariant():
     """After sanitize, the visible text of a color line must equal the
     plain capture — same content, same visible length."""
-    from easymotion import _sanitize_capture, _strip_escapes
+    from easymotion import _sanitize_capture
 
     cases = [
         (f"{ESC}[31mhello{ESC}[0m world", "hello world"),
@@ -268,16 +273,16 @@ def test_bg_at():
     assert _bg_at(f"{ESC}[41m中x", 2) == "41"
 
 
-def test_draw_hint_char_keeps_bg(capsys):
-    from easymotion import AnsiSequence, _draw_hint_char
+def test_addstr_bg_keeps_background(capsys):
+    from easymotion import AnsiSequence
 
     screen = AnsiSequence()
-    _draw_hint_char(screen, 0, 0, "a", screen.A_HINT1, "44")
+    screen.addstr(0, 0, "a", screen.A_HINT1, "44")
     out = capsys.readouterr().out
     # hint fg, original bg re-asserted, trailing reset
     assert f"{ESC}[1;31m" in out and f"{ESC}[44m" in out and out.endswith(f"{ESC}[0m")
-    # without bg falls back to plain addstr path (no bg sequence)
-    _draw_hint_char(screen, 0, 0, "a", screen.A_HINT1, "")
+    # without bg no bg sequence is emitted
+    screen.addstr(0, 0, "a", screen.A_HINT1)
     assert f"{ESC}[44m" not in capsys.readouterr().out
 
 
@@ -1609,7 +1614,7 @@ def test_capture_pane_preserve_colors(tmux_server):
     colored = "\n".join(pane.color_lines)
     assert "\x1b[31m" in colored and "RED" in colored
     # sanitized+stripped color lines match plain lines (alignment invariant)
-    from easymotion import _sanitize_capture, _strip_escapes
+    from easymotion import _sanitize_capture
 
     for cl, pl in zip(pane.color_lines, plain_on):
         assert _strip_escapes(_sanitize_capture(cl)).rstrip() == pl.rstrip()

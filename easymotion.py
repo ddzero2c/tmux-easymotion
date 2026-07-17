@@ -169,8 +169,9 @@ class Screen(ABC):
         pass
 
     @abstractmethod
-    def addstr(self, y: int, x: int, text: str, attr=0):
-        """Add string with attributes"""
+    def addstr(self, y: int, x: int, text: str, attr=0, bg: str = ""):
+        """Add string with attributes. ``bg`` is an SGR background fragment
+        to re-assert under the text (backends without raw SGR ignore it)."""
         pass
 
     @abstractmethod
@@ -217,17 +218,16 @@ class AnsiSequence(Screen):
             return self.HINT2
         return ""
 
-    def addstr(self, y: int, x: int, text: str, attr=0):
-        attr_str = self.transform_attr(attr)
-        if attr_str:
-            sys.stdout.write(f"{self.ESC}[{y + 1};{x + 1}H{attr_str}{text}{self.RESET}")
+    def addstr(self, y: int, x: int, text: str, attr=0, bg: str = ""):
+        seq = self.transform_attr(attr)
+        if bg:
+            # re-assert the cell's original background so hints don't
+            # punch default-bg holes in colored regions
+            seq += f"{self.ESC}[{bg}m"
+        if seq:
+            sys.stdout.write(f"{self.ESC}[{y + 1};{x + 1}H{seq}{text}{self.RESET}")
         else:
             sys.stdout.write(f"{self.ESC}[{y + 1};{x + 1}H{text}")
-
-    def addraw(self, y: int, x: int, text: str):
-        """Position the cursor and write ``text`` verbatim — used for
-        pre-rendered color background lines that carry their own SGR."""
-        sys.stdout.write(f"{self.ESC}[{y + 1};{x + 1}H{text}")
 
     def refresh(self):
         sys.stdout.flush()
@@ -342,7 +342,8 @@ class Curses(Screen):
             return self.attr_hint2
         return curses.A_NORMAL
 
-    def addstr(self, y: int, x: int, text: str, attr=0):
+    def addstr(self, y: int, x: int, text: str, attr=0, bg: str = ""):
+        # bg (raw SGR) is not expressible through curses color pairs; ignored
         if self.stdscr is None:
             return
         try:
@@ -511,11 +512,6 @@ def _dim_preserving(line: str) -> str:
     return line.replace("\x1b[0m", "\x1b[0;2m").replace("\x1b[m", "\x1b[0;2m")
 
 
-def _strip_escapes(line: str) -> str:
-    """Remove all SGR sequences (for width checks; run after sanitize)."""
-    return _SGR_RE.sub("", line)
-
-
 def _render_color_line(line: str, width: int) -> str:
     """Prepare a sanitized color line for display: expand tabs against
     pane-local stops (terminal tab stops are screen-absolute and would
@@ -591,16 +587,6 @@ def _bg_at(line: str, target_col: int) -> str:
         col += get_char_width(line[i], col)
         i += 1
     return bg
-
-
-def _draw_hint_char(screen, y, x, ch, attr, bg):
-    """Draw one hint character; on the ANSI backend re-assert the cell's
-    original background so hints don't punch holes in colored regions."""
-    if bg and isinstance(screen, AnsiSequence):
-        seq = screen.transform_attr(attr)
-        screen.addraw(y, x, f"{seq}\x1b[{bg}m{ch}{screen.RESET}")
-    else:
-        screen.addstr(y, x, ch, attr)
 
 
 def _expand_tabs(line: str) -> str:
@@ -894,7 +880,13 @@ def tmux_capture_pane(pane, preserve_colors=False):
     lines = sh_tmux_batch([base, [*base, "-e", "-N"]])[:-1].split("\n")
     # Both captures cover the same row range, so they have equal line counts.
     half = len(lines) // 2
-    pane.color_lines = lines[half : half + pane.height]
+    # Pre-render once: color_lines never change after capture, so the
+    # sanitize -> dim-preserve -> tab-expand/pad pipeline runs here instead
+    # of on every keypress redraw.
+    pane.color_lines = [
+        _render_color_line(_dim_preserving(_sanitize_capture(cl)), pane.width)
+        for cl in lines[half : half + pane.height]
+    ]
     return lines[:half][: pane.height]
 
 
@@ -1028,29 +1020,24 @@ def draw_all_panes(
     screen,
     vertical_border: str = "│",
     horizontal_border: str = "─",
-    preserve_colors: bool = False,
-    refresh: bool = True,
 ):
-    """Draw all panes and their borders"""
+    """Draw all panes and their borders. Callers refresh after drawing
+    hints on top, so no flush happens here."""
     sorted_panes = sorted(panes, key=lambda p: p.start_y + p.height)
 
     for pane in sorted_panes:
         visible_height = min(pane.height, terminal_height - pane.start_y)
 
-        if preserve_colors and pane.color_lines:
-            # Background keeps the pane's own colors, dimmed. The color
-            # capture is display-only: sanitize (SGR-only whitelist),
-            # re-assert dim across in-line resets, expand tabs pane-locally
-            # and pad to pane width. Each line ends in RESET so SGR state
-            # never leaks into borders or hints.
+        if pane.color_lines:
+            # Background keeps the pane's own colors, dimmed — color_lines
+            # are pre-rendered display strings (ANSI backend only). Each
+            # line ends in RESET so SGR state never leaks into borders or
+            # hints.
             for y, cline in enumerate(pane.color_lines[:visible_height]):
-                rendered = _render_color_line(
-                    _dim_preserving(_sanitize_capture(cline)), pane.width
-                )
-                screen.addraw(
+                screen.addstr(
                     pane.start_y + y,
                     pane.start_x,
-                    f"{screen.DIM}{rendered}{screen.RESET}",
+                    f"{screen.DIM}{cline}{screen.RESET}",
                 )
         else:
             # Pre-expand tabs so curses can't re-expand them against screen-
@@ -1072,9 +1059,6 @@ def draw_all_panes(
             screen.addstr(
                 end_y, pane.start_x, horizontal_border * pane.width, screen.A_DIM
             )
-
-    if refresh:
-        screen.refresh()
 
 
 def generate_smartsign_patterns(
@@ -1253,13 +1237,13 @@ def draw_all_hints(positions, terminal_height, screen, hint_bgs=None):
         bg1, bg2 = (hint_bgs or {}).get((screen_y, screen_x), ("", ""))
 
         # Draw first character of hint
-        _draw_hint_char(screen, screen_y, screen_x, hint[0], screen.A_HINT1, bg1)
+        screen.addstr(screen_y, screen_x, hint[0], screen.A_HINT1, bg1)
 
         # Draw second character if hint has two chars and space allows
         if len(hint) > 1:
             next_x = screen_x + get_char_width(char)
             if next_x < pane_right_edge:
-                _draw_hint_char(screen, screen_y, next_x, hint[1], screen.A_HINT2, bg2)
+                screen.addstr(screen_y, next_x, hint[1], screen.A_HINT2, bg2)
 
     screen.refresh()
 
@@ -1346,10 +1330,11 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
             if true_col < len(line):
                 char = line[true_col]
                 next_char = line[true_col + 1] if true_col + 1 < len(line) else ""
-                if preserve_colors and line_num < len(pane.color_lines):
+                if line_num < len(pane.color_lines):
                     # original background at the two hint cells, so hints
                     # drawn over colored regions keep the cell's bg
-                    cline = _sanitize_capture(pane.color_lines[line_num])
+                    # (color_lines are pre-rendered: sanitized, SGR-only)
+                    cline = pane.color_lines[line_num]
                     hint_bgs[(pane.start_y + line_num, pane.start_x + visual_col)] = (
                         _bg_at(cline, visual_col),
                         _bg_at(cline, visual_col + get_char_width(char, visual_col)),
@@ -1373,7 +1358,6 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
         screen,
         config.vertical_border,
         config.horizontal_border,
-        preserve_colors,
     )
     draw_all_hints(positions, terminal_height, screen, hint_bgs)
     overlay_window_id = startup.window_id or get_current_window_id()
@@ -1409,19 +1393,12 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
                 screen,
                 config.vertical_border,
                 config.horizontal_border,
-                preserve_colors,
-                refresh=False,
             )
             for screen_y, screen_x, _, _, _, hint in positions:
                 if hint.startswith(key_sequence) and len(hint) > len(key_sequence):
                     bg1, _ = hint_bgs.get((screen_y, screen_x), ("", ""))
-                    _draw_hint_char(
-                        screen,
-                        screen_y,
-                        screen_x,
-                        hint[len(key_sequence)],
-                        screen.A_HINT2,
-                        bg1,
+                    screen.addstr(
+                        screen_y, screen_x, hint[len(key_sequence)], screen.A_HINT2, bg1
                     )
             screen.refresh()
         else:
