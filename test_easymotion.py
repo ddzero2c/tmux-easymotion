@@ -1412,6 +1412,7 @@ def test_get_startup_info(tmux_server):
                 patch.dict("os.environ", {"TMUX_PANE": ""}):
             info = get_startup_info()
 
+        assert info is not None
         assert info.panes_info is not None
         assert [p.pane_id for p in info.panes_info] == [tmux_server.pane_id]
         pane = info.panes_info[0]
@@ -1426,6 +1427,17 @@ def test_get_startup_info(tmux_server):
     finally:
         _clear_options_cache()
         easymotion.TMUX_VERSION = None
+
+
+def test_get_startup_info_failure_returns_none():
+    """A failing batch (e.g. no tmux/client) must degrade to None so main
+    falls back to the lazy per-call queries instead of crashing."""
+
+    def boom(cmd):
+        raise subprocess.CalledProcessError(1, cmd)
+
+    with patch("easymotion.sh", boom):
+        assert get_startup_info() is None
 
 
 @requires_tmux

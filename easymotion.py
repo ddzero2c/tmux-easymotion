@@ -588,14 +588,27 @@ class StartupInfo:
     window_id: str
 
 
-def get_startup_info() -> StartupInfo:
+def get_startup_info() -> Optional[StartupInfo]:
     """Fetch everything easymotion needs at startup in ONE tmux invocation:
     version, client size, window id, global options, and pane geometry.
 
     Side effects: primes the tmux-options cache and the version-dependent
     tab behaviour, replacing the separate 'tmux -V' / 'show-options -g' /
     'display-message' / 'list-panes' subprocess calls.
+
+    The batch is all-or-nothing: one failing sub-command (e.g. no client
+    for display-message) or an unparsable section kills the whole call,
+    so failure returns None and callers fall back to the lazy per-call
+    queries.
     """
+    try:
+        return _fetch_startup_info()
+    except Exception:
+        logging.error("Batched startup query failed", exc_info=True)
+        return None
+
+
+def _fetch_startup_info() -> StartupInfo:
     global _tmux_options
     out = sh_tmux_batch(
         [
