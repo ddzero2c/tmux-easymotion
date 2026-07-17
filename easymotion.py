@@ -769,11 +769,14 @@ def tmux_move_cursor(pane, line_num, true_col):
     # wrapped logical line, the start-of-line calls above walk ABOVE the
     # view and shift scroll_position — every row count would then be off
     # by the shift. Don't assume where the cursor ended up: read it back
-    # in the same batch and correct against the measured position.
-    cmds.append(
-        ["display-message", "-p", "-t", pid, "#{scroll_position},#{copy_cursor_y}"]
-    )
-    out = sh_tmux_batch(cmds).strip().split("\n")[-1]
+    # and correct against the measured position. The read is a separate
+    # invocation (not chained into the batch) because older tmux evaluates
+    # display-message before queued mode commands have been processed.
+    sh_tmux_batch(cmds)
+    out = sh(
+        ["tmux", "display-message", "-p", "-t", pid,
+         "#{scroll_position},#{copy_cursor_y}"]
+    ).strip()
     new_scroll, cursor_row = (int(v or 0) for v in out.split(","))
 
     # The captured line_num is a row of the view at pane.scroll_position;
