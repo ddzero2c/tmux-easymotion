@@ -452,6 +452,21 @@ def sh(cmd: list) -> str:
         raise
 
 
+def sh_tmux_batch(cmds: list) -> str:
+    """Run several tmux commands in a single tmux invocation.
+
+    tmux treats a literal ';' argv element as a command separator, so
+    this costs one subprocess fork instead of one per command. Each
+    sub-command still needs its own '-t' target.
+    """
+    argv = ["tmux"]
+    for i, cmd in enumerate(cmds):
+        if i:
+            argv.append(";")
+        argv.extend(cmd)
+    return sh(argv)
+
+
 def get_initial_tmux_info():
     """Get all needed tmux info in one optimized call"""
     format_str = (
@@ -605,14 +620,15 @@ def tmux_capture_pane(pane):
     return sh(cmd)[:-1].split("\n")[: pane.height]
 
 
+@perf_timer("Moving cursor")
 def tmux_move_cursor(pane, line_num, true_col):
     pid = pane.pane_id
-    cmds = [["tmux", "select-pane", "-t", pid]]
+    cmds = [["select-pane", "-t", pid]]
     if not pane.copy_mode:
-        cmds.append(["tmux", "copy-mode", "-t", pid])
+        cmds.append(["copy-mode", "-t", pid])
 
     def x(*args):
-        cmds.append(["tmux", "send-keys", "-X", "-t", pid, *args])
+        cmds.append(["send-keys", "-X", "-t", pid, *args])
 
     # start-of-line on row 0 (instead of after cursor-down) so it can't
     # walk into a wrapped *logical* line above the target — issue #18.
@@ -638,8 +654,7 @@ def tmux_move_cursor(pane, line_num, true_col):
     if true_col > 0:
         x("-N", str(true_col), "cursor-right")
 
-    for cmd in cmds:
-        sh(cmd)
+    sh_tmux_batch(cmds)
 
 
 def assign_hints_by_distance(
@@ -829,6 +844,22 @@ def generate_smartsign_patterns(
     return patterns
 
 
+def _fold_for_search(line: str, case_sensitive: bool):
+    """Return (haystack, fold_slices) for scanning ``line``.
+
+    ``haystack`` is guaranteed index-aligned with ``line``. When lower()
+    would change the string length (e.g. 'İ' -> 'i̇'), the original line
+    is returned with ``fold_slices=True``, asking the caller to lower
+    each slice before comparing instead.
+    """
+    if case_sensitive:
+        return line, False
+    lowered = line.lower()
+    if len(lowered) == len(line):
+        return lowered, False
+    return line, True
+
+
 @perf_timer("Finding matches")
 def find_matches(
     panes, search_pattern, case_sensitive: bool = False, smartsign: bool = False
@@ -849,42 +880,26 @@ def find_matches(
     pattern_length = len(search_pattern)
 
     # GENERIC: Apply smartsign transformation (works for any pattern length)
-    search_patterns = generate_smartsign_patterns(search_pattern, smartsign)
+    search_patterns = set(generate_smartsign_patterns(search_pattern, smartsign))
+    if not case_sensitive:
+        search_patterns = {p.lower() for p in search_patterns}
 
     for pane in panes:
         for line_num, line in enumerate(pane.lines):
-            # Check each position in the line
-            for pos in range(len(line)):
-                # For multi-char search, make sure we have enough characters
-                if pos + pattern_length > len(line):
-                    continue
-
-                # Get substring at current position
-                substring = line[pos : pos + pattern_length]
-
-                # Skip if substring would split a wide character
-                if pattern_length > 1:
-                    # Check if we're in the middle of a wide char
-                    if pos > 0 and get_char_width(line[pos - 1]) == 2:
-                        # Check if previous char's visual position overlaps with current pos
-                        visual_before = sum(get_char_width(c) for c in line[: pos - 1])
-                        visual_at_pos = sum(get_char_width(c) for c in line[:pos])
-                        if visual_at_pos - visual_before == 1:
-                            # We're at the second half of a wide char, skip
-                            continue
-
-                # Check against all search patterns
-                for pattern in search_patterns:
-                    matched = False
-                    if case_sensitive:
-                        matched = substring == pattern
-                    else:
-                        matched = substring.lower() == pattern.lower()
-
-                    if matched:
-                        visual_col = get_string_width(line[:pos])
-                        matches.append((pane, line_num, visual_col))
-                        break  # Found match, no need to check other patterns
+            haystack, fold_slices = _fold_for_search(line, case_sensitive)
+            # visual_col tracks the width of line[:width_pos]; advanced
+            # lazily so match-free positions cost nothing extra.
+            visual_col = 0
+            width_pos = 0
+            for pos in range(len(line) - pattern_length + 1):
+                substring = haystack[pos : pos + pattern_length]
+                if fold_slices:
+                    substring = substring.lower()
+                if substring in search_patterns:
+                    while width_pos < pos:
+                        visual_col += get_char_width(line[width_pos], visual_col)
+                        width_pos += 1
+                    matches.append((pane, line_num, visual_col))
 
     return matches
 
