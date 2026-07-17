@@ -1429,6 +1429,34 @@ def test_get_startup_info(tmux_server):
         easymotion.TMUX_VERSION = None
 
 
+def test_setup_logging_survives_early_logging_call(tmp_path, monkeypatch):
+    """Regression: a logging call before setup_logging (e.g. sh() debug
+    logging inside the batched startup query) auto-installs a stderr
+    handler; without force=True the later basicConfig(filename=...) is a
+    silent no-op and the perf/debug log is never written."""
+    import logging
+
+    log_file = tmp_path / "easymotion.log"
+    monkeypatch.setattr(
+        "os.path.expanduser", lambda p: str(log_file) if p.startswith("~") else p
+    )
+    monkeypatch.setattr(easymotion, "_tmux_options", {"@easymotion-perf": "true"})
+    root = logging.getLogger()
+    saved_handlers, root.handlers = root.handlers, []
+    saved_disabled = root.disabled
+    try:
+        logging.debug("early call before setup_logging")  # installs stderr handler
+        easymotion.setup_logging()
+        logging.info("after setup_logging")
+        logging.shutdown()
+        assert log_file.exists() and "after setup_logging" in log_file.read_text()
+    finally:
+        for h in root.handlers:
+            h.close()
+        root.handlers = saved_handlers
+        root.disabled = saved_disabled
+
+
 def test_get_startup_info_failure_returns_none():
     """A failing batch (e.g. no tmux/client) must degrade to None so main
     falls back to the lazy per-call queries instead of crashing."""
