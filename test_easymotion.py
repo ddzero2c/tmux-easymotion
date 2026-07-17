@@ -11,7 +11,7 @@ from easymotion import (
     PaneInfo,
     _detect_tmux_version,
     _expand_tabs,
-    _get_all_tmux_options,
+    _clear_options_cache,
     assign_hints_by_distance,
     calculate_tab_width,
     find_matches,
@@ -20,6 +20,7 @@ from easymotion import (
     get_char_width,
     get_string_width,
     get_tmux_option,
+    get_startup_info,
     get_true_position,
     tmux_move_cursor,
     update_hints_display,
@@ -60,15 +61,11 @@ def test_get_true_position():
 def tmux_mode(request, monkeypatch):
     """Force easymotion to behave as the parametrized tmux version.
 
-    Patches both ``TMUX_VERSION`` and the cached
-    ``_TMUX_HAS_POSITION_AWARE_TABS`` flag, then clears the width caches so
-    pre-fixture lookups don't bleed into the test.
+    Patches ``TMUX_VERSION`` and clears the width caches so pre-fixture
+    lookups don't bleed into the test.
     """
     version = request.param
     monkeypatch.setattr(easymotion, "TMUX_VERSION", version)
-    monkeypatch.setattr(
-        easymotion, "_TMUX_HAS_POSITION_AWARE_TABS", version >= (3, 6)
-    )
     easymotion._char_width_no_tab.cache_clear()
     easymotion.get_string_width.cache_clear()
     yield version
@@ -1338,7 +1335,7 @@ def test_cross_pane_jump(tmux_server):
 def test_get_tmux_option_reads_value(tmux_server):
     """Integration test: verify get_tmux_option reads tmux options correctly."""
     # Clear cache to ensure fresh read
-    _get_all_tmux_options.cache_clear()
+    _clear_options_cache()
 
     # Set a custom tmux option
     test_value = f"test_hints_{uuid.uuid4().hex[:8]}"
@@ -1375,7 +1372,7 @@ def test_get_tmux_option_reads_value(tmux_server):
 def test_get_tmux_option_returns_default(tmux_server):
     """Integration test: verify get_tmux_option returns default when option not set."""
     # Clear cache to ensure fresh read
-    _get_all_tmux_options.cache_clear()
+    _clear_options_cache()
 
     # Use an option name that definitely doesn't exist
     nonexistent_option = f"@easymotion-nonexistent-{uuid.uuid4().hex}"
@@ -1399,9 +1396,54 @@ def test_get_tmux_option_returns_default(tmux_server):
 
 
 @requires_tmux
+def test_get_startup_info(tmux_server):
+    """Integration test: the single batched startup query must yield the
+    same options, panes, window id and version as the individual calls."""
+    subprocess.run(
+        ["tmux", "-L", tmux_server.server_name,
+         "set-option", "-g", "@easymotion-hints", "xyz"],
+        check=True,
+    )
+    _clear_options_cache()
+    try:
+        # TMUX_PANE from the developer's own tmux session would point at a
+        # pane that doesn't exist on the isolated test server
+        with patch("easymotion.sh", tmux_server.make_sh_for_server()), \
+                patch.dict("os.environ", {"TMUX_PANE": ""}):
+            info = get_startup_info()
+
+        assert info is not None
+        assert info.panes_info is not None
+        assert [p.pane_id for p in info.panes_info] == [tmux_server.pane_id]
+        pane = info.panes_info[0]
+        assert pane.active and pane.width == tmux_server.width
+        assert info.window_id.startswith("@")
+        # detached test server has no attached client
+        assert info.terminal_size is None
+        # options were primed from the batch — no extra subprocess needed
+        assert get_tmux_option("@easymotion-hints", "") == "xyz"
+        assert easymotion.TMUX_VERSION is not None
+        assert easymotion.TMUX_VERSION >= (0, 0)
+    finally:
+        _clear_options_cache()
+        easymotion.TMUX_VERSION = None
+
+
+def test_get_startup_info_failure_returns_none():
+    """A failing batch (e.g. no tmux/client) must degrade to None so main
+    falls back to the lazy per-call queries instead of crashing."""
+
+    def boom(cmd):
+        raise subprocess.CalledProcessError(1, cmd)
+
+    with patch("easymotion.sh", boom):
+        assert get_startup_info() is None
+
+
+@requires_tmux
 def test_config_from_tmux(tmux_server):
     """Integration test: verify Config.from_tmux() reads all options correctly."""
-    _get_all_tmux_options.cache_clear()
+    _clear_options_cache()
 
     def set_option(name, value):
         subprocess.run(
@@ -1443,7 +1485,7 @@ def test_config_from_tmux(tmux_server):
     assert config.dim == "2;90"
 
     # Now test with false values
-    _get_all_tmux_options.cache_clear()
+    _clear_options_cache()
     set_option("@easymotion-case-sensitive", "false")
     set_option("@easymotion-smartsign", "false")
     set_option("@easymotion-use-curses", "false")
@@ -1459,7 +1501,7 @@ def test_config_from_tmux(tmux_server):
 @requires_tmux
 def test_get_tmux_option_with_spaces(tmux_server):
     """Integration test: verify option values with spaces are parsed correctly."""
-    _get_all_tmux_options.cache_clear()
+    _clear_options_cache()
 
     # Set option with spaces
     test_value = "hello world test"
@@ -1493,7 +1535,7 @@ def test_get_tmux_option_with_spaces(tmux_server):
 @requires_tmux
 def test_get_tmux_option_with_quotes(tmux_server):
     """Integration test: verify option values with quotes are parsed correctly."""
-    _get_all_tmux_options.cache_clear()
+    _clear_options_cache()
 
     # Set option with quotes (tmux stores this with escaped quotes)
     test_value = 'it"s a test'

@@ -15,23 +15,18 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, fields
 from typing import Any, List, Optional
 
+_SCRIPT_START = time.perf_counter()
 
-def _detect_tmux_version() -> tuple:
-    """Detect installed tmux version as (major, minor).
 
-    Returns (0, 0) when detection fails or the version cannot be parsed
-    (e.g. ``tmux master``, ``tmux openbsd-6.6``). The fallback selects the
-    pre-3.6 fixed-width tab behaviour, which matches every released tmux
-    that shipped before position-aware tab rendering.
+def _parse_tmux_version(version_str: str) -> tuple:
+    """Parse a tmux version string (``tmux 3.6a`` or bare ``3.6a``) into
+    (major, minor).
+
+    Returns (0, 0) when the version cannot be parsed (e.g. ``tmux master``,
+    ``tmux openbsd-6.6``). The fallback selects the pre-3.6 fixed-width tab
+    behaviour, which matches every released tmux that shipped before
+    position-aware tab rendering.
     """
-    try:
-        result = subprocess.run(
-            ["tmux", "-V"], capture_output=True, text=True, check=True
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return (0, 0)
-
-    version_str = result.stdout.strip()
     if "openbsd-" in version_str or "master" in version_str:
         return (0, 0)
 
@@ -41,30 +36,75 @@ def _detect_tmux_version() -> tuple:
     return (0, 0)
 
 
-TMUX_VERSION = _detect_tmux_version()
-# tmux 3.6 changed tab rendering to be position-aware (terminal-correct),
-# matching the tab-stop behaviour expected by terminals. Older tmux
-# rendered tabs as a fixed 8-column glyph regardless of column.
-_TMUX_HAS_POSITION_AWARE_TABS = TMUX_VERSION >= (3, 6)
-
-
-@functools.lru_cache(maxsize=1)
-def _get_all_tmux_options() -> dict:
-    """Batch read all tmux options in one subprocess call."""
+def _detect_tmux_version() -> tuple:
+    """Detect installed tmux version as (major, minor) via ``tmux -V``."""
     try:
         result = subprocess.run(
-            ["tmux", "show-options", "-g"], capture_output=True, text=True, check=False
+            ["tmux", "-V"], capture_output=True, text=True, check=True
         )
-        options = {}
-        for line in result.stdout.strip().split("\n"):
-            if " " in line:
-                key, value = line.split(" ", 1)
-                # Strip outer quotes and unescape inner quotes
-                value = value.strip('"').replace('\\"', '"')
-                options[key] = value
-        return options
-    except Exception:
-        return {}
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return (0, 0)
+    return _parse_tmux_version(result.stdout.strip())
+
+
+# Primed by set_tmux_version() (from the batched startup query's
+# '#{version}') or lazily via 'tmux -V' on first tab-width lookup.
+TMUX_VERSION: Optional[tuple] = None
+
+
+def set_tmux_version(version_str: str) -> None:
+    """Prime version-dependent behaviour from a version string."""
+    global TMUX_VERSION
+    TMUX_VERSION = _parse_tmux_version(version_str)
+
+
+def _position_aware_tabs() -> bool:
+    # tmux 3.6 changed tab rendering to be position-aware (terminal-correct),
+    # matching the tab-stop behaviour expected by terminals. Older tmux
+    # rendered tabs as a fixed 8-column glyph regardless of column.
+    global TMUX_VERSION
+    if TMUX_VERSION is None:
+        TMUX_VERSION = _detect_tmux_version()
+    return TMUX_VERSION >= (3, 6)
+
+
+def _parse_option_lines(lines) -> dict:
+    """Parse ``show-options -g`` output lines into a dict."""
+    options = {}
+    for line in lines:
+        if " " in line:
+            key, value = line.split(" ", 1)
+            # Strip outer quotes and unescape inner quotes
+            value = value.strip('"').replace('\\"', '"')
+            options[key] = value
+    return options
+
+
+# Single options cache: primed by get_startup_info(), or filled lazily by
+# _get_all_tmux_options() on first read.
+_tmux_options: Optional[dict] = None
+
+
+def _clear_options_cache() -> None:
+    global _tmux_options
+    _tmux_options = None
+
+
+def _get_all_tmux_options() -> dict:
+    """All global tmux options, fetched once (unless primed at startup)."""
+    global _tmux_options
+    if _tmux_options is None:
+        try:
+            result = subprocess.run(
+                ["tmux", "show-options", "-g"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            _tmux_options = _parse_option_lines(result.stdout.strip().split("\n"))
+        except Exception:
+            return {}
+    return _tmux_options
 
 
 def get_tmux_option(option: str, default: str) -> str:
@@ -373,7 +413,7 @@ def get_char_width(char: str, position: int = 0) -> int:
     pane-local 8-col tab stop.
     """
     if char == "\t":
-        if _TMUX_HAS_POSITION_AWARE_TABS:
+        if _position_aware_tabs():
             return calculate_tab_width(position)
         return 8
     return _char_width_no_tab(char)
@@ -467,20 +507,23 @@ def sh_tmux_batch(cmds: list) -> str:
     return sh(argv)
 
 
+_PANE_FORMAT = (
+    "#{pane_id},#{window_zoomed_flag},#{pane_active},"
+    "#{pane_top},#{pane_height},#{pane_left},#{pane_width},"
+    "#{pane_in_mode},#{scroll_position},"
+    "#{cursor_y},#{cursor_x},#{copy_cursor_y},#{copy_cursor_x}"
+)
+
+
 def get_initial_tmux_info():
     """Get all needed tmux info in one optimized call"""
-    format_str = (
-        "#{pane_id},#{window_zoomed_flag},#{pane_active},"
-        + "#{pane_top},#{pane_height},#{pane_left},#{pane_width},"
-        + "#{pane_in_mode},#{scroll_position},"
-        + "#{cursor_y},#{cursor_x},#{copy_cursor_y},#{copy_cursor_x}"
-    )
+    output = sh(["tmux", "list-panes", "-F", _PANE_FORMAT]).strip()
+    return _parse_pane_lines(output.split("\n"))
 
-    cmd = ["tmux", "list-panes", "-F", format_str]
-    output = sh(cmd).strip()
 
+def _parse_pane_lines(lines) -> list:
     panes_info = []
-    for line in output.split("\n"):
+    for line in lines:
         if not line:
             continue
 
@@ -532,6 +575,67 @@ def get_initial_tmux_info():
     return panes_info
 
 
+# Separator line between variable-length sections of the batched startup
+# query. Must not contain '%' (display-message expands format sequences)
+# and only collides if a tmux option value equals it exactly.
+_STARTUP_SEP = "EASYMOTION_SEP_e5a1"
+
+
+@dataclass
+class StartupInfo:
+    panes_info: Optional[list]
+    terminal_size: Optional[tuple]  # (width, height-1), None if no client
+    window_id: str
+
+
+def get_startup_info() -> Optional[StartupInfo]:
+    """Fetch everything easymotion needs at startup in ONE tmux invocation:
+    version, client size, window id, global options, and pane geometry.
+
+    Side effects: primes the tmux-options cache and the version-dependent
+    tab behaviour, replacing the separate 'tmux -V' / 'show-options -g' /
+    'display-message' / 'list-panes' subprocess calls.
+
+    The batch is all-or-nothing: one failing sub-command (e.g. no client
+    for display-message) or an unparsable section kills the whole call,
+    so failure returns None and callers fall back to the lazy per-call
+    queries.
+    """
+    try:
+        return _fetch_startup_info()
+    except Exception:
+        logging.error("Batched startup query failed", exc_info=True)
+        return None
+
+
+def _fetch_startup_info() -> StartupInfo:
+    global _tmux_options
+    out = sh_tmux_batch(
+        [
+            ["display-message", "-p", "#{version},#{client_width},#{client_height}"],
+            _window_id_cmd(),
+            ["show-options", "-g"],
+            ["display-message", "-p", _STARTUP_SEP],
+            ["list-panes", "-F", _PANE_FORMAT],
+        ]
+    )
+    lines = out.split("\n")
+    version_str, client_w, client_h = lines[0].split(",")
+    window_id = lines[1].strip()
+    sep_idx = lines.index(_STARTUP_SEP, 2)
+
+    set_tmux_version(version_str)
+    _tmux_options = _parse_option_lines(lines[2:sep_idx])
+
+    try:
+        terminal_size = (int(client_w), int(client_h) - 1)
+    except ValueError:  # no attached client (e.g. detached test server)
+        terminal_size = None
+
+    panes_info = _parse_pane_lines([ln for ln in lines[sep_idx + 1 :] if ln])
+    return StartupInfo(panes_info, terminal_size, window_id)
+
+
 class PaneInfo:
     __slots__ = (
         "pane_id",
@@ -570,14 +674,19 @@ def get_terminal_size():
     return width, height - 1  # Subtract 1 from height
 
 
-def get_current_window_id():
-    """Return the window_id for the pane running this script"""
+def _window_id_cmd() -> list:
+    """display-message argv (sans 'tmux') querying this script's window_id."""
+    cmd = ["display-message", "-p"]
     pane_target = os.environ.get("TMUX_PANE")
-    cmd = ["tmux", "display-message", "-p"]
     if pane_target:
         cmd.extend(["-t", pane_target])
     cmd.append("#{window_id}")
-    return sh(cmd).strip()
+    return cmd
+
+
+def get_current_window_id():
+    """Return the window_id for the pane running this script"""
+    return sh(["tmux", *_window_id_cmd()]).strip()
 
 
 def getch(input_str=None, num_chars=1):
@@ -723,13 +832,13 @@ def generate_hints(keys: str, needed_count: Optional[int] = None) -> List[str]:
 
 
 @perf_timer()
-def init_panes():
+def init_panes(panes_info=None):
     """Initialize pane information with optimized info gathering"""
     panes = []
     max_x = 0
 
-    # Batch get all pane info
-    panes_info = get_initial_tmux_info()
+    if panes_info is None:
+        panes_info = get_initial_tmux_info()
 
     # Optimize pane processing with list comprehension
     for pane in panes_info:
@@ -964,9 +1073,15 @@ def draw_all_hints(positions, terminal_height, screen):
 
 
 @perf_timer("Total execution")
-def main(screen: Screen, config: Config):
+def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
     setup_logging(config.use_curses)
-    panes, max_x = init_panes()
+    logging.info(
+        f"Pre-main (interpreter+imports+startup query) took: "
+        f"{time.perf_counter() - _SCRIPT_START:.3f} seconds"
+    )
+    # Null-object so every fallback below reads uniformly.
+    startup = startup or StartupInfo(None, None, "")
+    panes, max_x = init_panes(startup.panes_info)
 
     # Get motion type from command line argument
     motion_type = sys.argv[1] if len(sys.argv) > 1 else "s"
@@ -1044,7 +1159,7 @@ def main(screen: Screen, config: Config):
                     )
                 )
 
-    terminal_width, terminal_height = get_terminal_size()
+    terminal_width, terminal_height = startup.terminal_size or get_terminal_size()
     draw_all_panes(
         panes,
         max_x,
@@ -1054,7 +1169,7 @@ def main(screen: Screen, config: Config):
         config.horizontal_border,
     )
     draw_all_hints(positions, terminal_height, screen)
-    overlay_window_id = get_current_window_id()
+    overlay_window_id = startup.window_id or get_current_window_id()
     sh(["tmux", "select-window", "-t", overlay_window_id])
 
     # Handle user input
@@ -1080,11 +1195,12 @@ def main(screen: Screen, config: Config):
 
 
 if __name__ == "__main__":
+    startup = get_startup_info()  # primes options cache + tmux version
     config = Config.from_tmux()
     screen: Screen = Curses(config) if config.use_curses else AnsiSequence(config)
     try:
         screen.init()
-        main(screen, config)
+        main(screen, config, startup)
     except KeyboardInterrupt:
         logging.info("Operation cancelled by user")
     except Exception as e:
