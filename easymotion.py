@@ -130,6 +130,9 @@ class Config:
         default="─", metadata={"opt": "@easymotion-horizontal-border"}
     )
     use_curses: bool = field(default=False, metadata={"opt": "@easymotion-use-curses"})
+    preserve_colors: bool = field(
+        default=False, metadata={"opt": "@easymotion-preserve-colors"}
+    )
     hint1_fg: str = field(default="1;31", metadata={"opt": "@easymotion-hint1-fg"})
     hint2_fg: str = field(default="1;32", metadata={"opt": "@easymotion-hint2-fg"})
     dim: str = field(default="2", metadata={"opt": "@easymotion-dim"})
@@ -223,6 +226,11 @@ class AnsiSequence(Screen):
             sys.stdout.write(f"{self.ESC}[{y + 1};{x + 1}H{attr_str}{text}{self.RESET}")
         else:
             sys.stdout.write(f"{self.ESC}[{y + 1};{x + 1}H{text}")
+
+    def addraw(self, y: int, x: int, text: str):
+        """Position the cursor and write ``text`` verbatim — used for
+        pre-rendered color background lines that carry their own SGR."""
+        sys.stdout.write(f"{self.ESC}[{y + 1};{x + 1}H{text}")
 
     def refresh(self):
         sys.stdout.flush()
@@ -459,6 +467,88 @@ def visual_slice(s: str, max_width: int) -> str:
     return "".join(out)
 
 
+_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _sanitize_capture(line: str) -> str:
+    """Whitelist filter for a ``capture-pane -e`` line: keep plain text and
+    SGR sequences (ESC[...m), strip everything else — OSC (hyperlinks,
+    titles; BEL or ST terminated), private-mode CSI (ESC[?...), other CSI,
+    and lone escapes."""
+    out = []
+    i = 0
+    n = len(line)
+    while i < n:
+        ch = line[i]
+        if ch != "\x1b":
+            out.append(ch)
+            i += 1
+            continue
+        m = _SGR_RE.match(line, i)
+        if m:
+            out.append(m.group())
+            i = m.end()
+            continue
+        if line.startswith("]", i + 1):  # OSC ... (BEL | ESC \)
+            bel = line.find("\x07", i + 2)
+            st = line.find("\x1b\\", i + 2)
+            ends = [e for e in (bel, st) if e != -1]
+            if not ends:
+                break  # unterminated OSC: drop the rest of the line
+            end = min(ends)
+            i = end + (1 if end == bel else 2)
+            continue
+        if line.startswith("[", i + 1):  # non-SGR CSI: skip to final byte
+            j = i + 2
+            while j < n and not ("\x40" <= line[j] <= "\x7e"):
+                j += 1
+            i = j + 1
+            continue
+        i += 2  # two-char escape (ESC + one byte)
+    return "".join(out)
+
+
+def _dim_preserving(line: str) -> str:
+    """Re-assert dim across in-line SGR resets so the whole background
+    line stays dimmed. Pure literal replacement, no SGR parsing."""
+    return line.replace("\x1b[0m", "\x1b[0;2m").replace("\x1b[m", "\x1b[0;2m")
+
+
+def _strip_escapes(line: str) -> str:
+    """Remove all SGR sequences (for width checks; run after sanitize)."""
+    return _SGR_RE.sub("", line)
+
+
+def _render_color_line(line: str, width: int) -> str:
+    """Prepare a sanitized color line for display: expand tabs against
+    pane-local stops (terminal tab stops are screen-absolute and would
+    misalign split panes) and pad with spaces to exactly ``width`` visible
+    cells so the previous frame is fully overwritten. SGR sequences are
+    skipped while counting cells, never interpreted."""
+    out = []
+    col = 0
+    i = 0
+    n = len(line)
+    while i < n:
+        m = _SGR_RE.match(line, i)
+        if m:
+            out.append(m.group())
+            i = m.end()
+            continue
+        ch = line[i]
+        if ch == "\t":
+            w = get_char_width(ch, col)
+            out.append(" " * w)
+        else:
+            w = _char_width_no_tab(ch)
+            out.append(ch)
+        col += w
+        i += 1
+    if col < width:
+        out.append(" " * (width - col))
+    return "".join(out)
+
+
 def _expand_tabs(line: str) -> str:
     """Replace tabs with spaces using tmux's pane-local tab stops, so
     curses' screen-absolute tab handling can't disagree with tmux's
@@ -654,6 +744,7 @@ class PaneInfo:
         "start_x",
         "width",
         "lines",
+        "color_lines",
         "positions",
         "copy_mode",
         "scroll_position",
@@ -669,6 +760,7 @@ class PaneInfo:
         self.start_x = start_x
         self.width = width
         self.lines = []
+        self.color_lines = []
         self.positions = []
         self.copy_mode = False
         self.scroll_position = 0
@@ -723,19 +815,33 @@ def getch(input_str=None, num_chars=1):
     return ch
 
 
-def tmux_capture_pane(pane):
-    """Optimized pane content capture"""
+def tmux_capture_pane(pane, preserve_colors=False):
+    """Optimized pane content capture.
+
+    With ``preserve_colors`` a second, escape-preserving capture (-e; -N
+    keeps trailing spaces aligned with the plain capture) is fetched in the
+    SAME tmux invocation to minimize the content-race window, and stored on
+    ``pane.color_lines``. It is write-only display data — all logic (search,
+    columns, cursor movement) uses only the plain capture returned here.
+    """
     if not pane.height or not pane.width:
         return []
 
-    cmd = ["tmux", "capture-pane", "-p", "-t", pane.pane_id]
+    base = ["capture-pane", "-p", "-t", pane.pane_id]
     if pane.scroll_position > 0:
         end_pos = -(pane.scroll_position - pane.height + 1)
-        cmd.extend(["-S", str(-pane.scroll_position), "-E", str(end_pos)])
+        base.extend(["-S", str(-pane.scroll_position), "-E", str(end_pos)])
 
     # Keep literal tabs: cursor-right steps through tmux's cell buffer
     # one char at a time, so true_col must count against this same string.
-    return sh(cmd)[:-1].split("\n")[: pane.height]
+    if not preserve_colors:
+        return sh(["tmux", *base])[:-1].split("\n")[: pane.height]
+
+    lines = sh_tmux_batch([base, [*base, "-e", "-N"]])[:-1].split("\n")
+    # Both captures cover the same row range, so they have equal line counts.
+    half = len(lines) // 2
+    pane.color_lines = lines[half : half + pane.height]
+    return lines[:half][: pane.height]
 
 
 @perf_timer("Moving cursor")
@@ -841,7 +947,7 @@ def generate_hints(keys: str, needed_count: Optional[int] = None) -> List[str]:
 
 
 @perf_timer()
-def init_panes(panes_info=None):
+def init_panes(panes_info=None, preserve_colors=False):
     """Initialize pane information with optimized info gathering"""
     panes = []
     max_x = 0
@@ -853,7 +959,7 @@ def init_panes(panes_info=None):
     for pane in panes_info:
         # Only capture pane content when really needed
         if pane.height > 0 and pane.width > 0:
-            pane.lines = tmux_capture_pane(pane)
+            pane.lines = tmux_capture_pane(pane, preserve_colors)
             max_x = max(max_x, pane.start_x + pane.width)
             panes.append(pane)
 
@@ -868,6 +974,8 @@ def draw_all_panes(
     screen,
     vertical_border: str = "│",
     horizontal_border: str = "─",
+    preserve_colors: bool = False,
+    refresh: bool = True,
 ):
     """Draw all panes and their borders"""
     sorted_panes = sorted(panes, key=lambda p: p.start_y + p.height)
@@ -875,11 +983,27 @@ def draw_all_panes(
     for pane in sorted_panes:
         visible_height = min(pane.height, terminal_height - pane.start_y)
 
-        # Pre-expand tabs so curses can't re-expand them against screen-
-        # absolute stops and shift content in non-aligned split panes.
-        for y, line in enumerate(pane.lines[:visible_height]):
-            sliced = visual_slice(_expand_tabs(line), pane.width)
-            screen.addstr(pane.start_y + y, pane.start_x, sliced)
+        if preserve_colors and pane.color_lines:
+            # Background keeps the pane's own colors, dimmed. The color
+            # capture is display-only: sanitize (SGR-only whitelist),
+            # re-assert dim across in-line resets, expand tabs pane-locally
+            # and pad to pane width. Each line ends in RESET so SGR state
+            # never leaks into borders or hints.
+            for y, cline in enumerate(pane.color_lines[:visible_height]):
+                rendered = _render_color_line(
+                    _dim_preserving(_sanitize_capture(cline)), pane.width
+                )
+                screen.addraw(
+                    pane.start_y + y,
+                    pane.start_x,
+                    f"{screen.DIM}{rendered}{screen.RESET}",
+                )
+        else:
+            # Pre-expand tabs so curses can't re-expand them against screen-
+            # absolute stops and shift content in non-aligned split panes.
+            for y, line in enumerate(pane.lines[:visible_height]):
+                sliced = visual_slice(_expand_tabs(line), pane.width)
+                screen.addstr(pane.start_y + y, pane.start_x, sliced)
 
         # Draw vertical borders
         if pane.start_x + pane.width < max_x:
@@ -895,7 +1019,8 @@ def draw_all_panes(
                 end_y, pane.start_x, horizontal_border * pane.width, screen.A_DIM
             )
 
-    screen.refresh()
+    if refresh:
+        screen.refresh()
 
 
 def generate_smartsign_patterns(
@@ -1090,7 +1215,12 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
     )
     # Null-object so every fallback below reads uniformly.
     startup = startup or StartupInfo(None, None, "")
-    panes, max_x = init_panes(startup.panes_info)
+
+    preserve_colors = config.preserve_colors and not config.use_curses
+    if config.preserve_colors and config.use_curses:
+        logging.debug("@easymotion-preserve-colors ignored: curses backend")
+
+    panes, max_x = init_panes(startup.panes_info, preserve_colors)
 
     # Get motion type from command line argument
     motion_type = sys.argv[1] if len(sys.argv) > 1 else "s"
@@ -1176,6 +1306,7 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
         screen,
         config.vertical_border,
         config.horizontal_border,
+        preserve_colors,
     )
     draw_all_hints(positions, terminal_height, screen)
     overlay_window_id = startup.window_id or get_current_window_id()
@@ -1198,6 +1329,28 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
             return  # Exit after finding and moving to target
         elif len(key_sequence) >= 2:  # If no target found after 2 chars
             return  # Exit program
+        elif preserve_colors:
+            # Full-redraw strategy: repaint the colored background for all
+            # panes (restores every non-matching hint cell in one go, no
+            # per-cell color restoration), then the remaining hint chars.
+            # Writes accumulate in the stdout buffer; refresh() flushes the
+            # whole frame at once to minimize flicker.
+            draw_all_panes(
+                panes,
+                max_x,
+                terminal_height,
+                screen,
+                config.vertical_border,
+                config.horizontal_border,
+                preserve_colors,
+                refresh=False,
+            )
+            for screen_y, screen_x, _, _, _, hint in positions:
+                if hint.startswith(key_sequence) and len(hint) > len(key_sequence):
+                    screen.addstr(
+                        screen_y, screen_x, hint[len(key_sequence)], screen.A_HINT2
+                    )
+            screen.refresh()
         else:
             # Update display to show remaining possible hints
             update_hints_display(screen, positions, key_sequence)

@@ -22,6 +22,7 @@ from easymotion import (
     get_tmux_option,
     get_startup_info,
     get_true_position,
+    tmux_capture_pane,
     tmux_move_cursor,
     update_hints_display,
     visual_slice,
@@ -181,6 +182,69 @@ def test_expand_tabs_uses_pane_local_stops(tmux_mode):
     # No tabs → identity.
     assert _expand_tabs("hello") == "hello"
     assert _expand_tabs("") == ""
+
+
+ESC = "\x1b"
+
+
+def test_dim_preserving():
+    from easymotion import _dim_preserving
+
+    # ESC[0m and ESC[m resets become dim-preserving resets
+    assert _dim_preserving(f"a{ESC}[0mb") == f"a{ESC}[0;2mb"
+    assert _dim_preserving(f"a{ESC}[mb") == f"a{ESC}[0;2mb"
+    # idempotent: the replacement contains no further replaceable resets
+    once = _dim_preserving(f"a{ESC}[0mb{ESC}[mc")
+    assert _dim_preserving(once) == once
+    # no resets → untouched
+    assert _dim_preserving(f"{ESC}[31mred") == f"{ESC}[31mred"
+
+
+def test_sanitize_capture():
+    from easymotion import _sanitize_capture
+
+    # SGR passes through, incl. 256-color and truecolor
+    for sgr in ("31", "1;32", "38;5;208", "38;2;10;20;30", "0", ""):
+        line = f"{ESC}[{sgr}mtext"
+        assert _sanitize_capture(line) == line
+    # OSC-8 hyperlink stripped (BEL- and ST-terminated)
+    assert _sanitize_capture(f"a{ESC}]8;;http://x\x07link{ESC}]8;;\x07b") == "alinkb"
+    assert _sanitize_capture(f"a{ESC}]0;title{ESC}\\b") == "ab"
+    # private-mode CSI stripped
+    assert _sanitize_capture(f"a{ESC}[?25lb") == "ab"
+    # other CSI (cursor movement) stripped
+    assert _sanitize_capture(f"a{ESC}[2Ab") == "ab"
+    # plain text untouched
+    assert _sanitize_capture("hello 中文") == "hello 中文"
+
+
+def test_color_line_alignment_invariant():
+    """After sanitize, the visible text of a color line must equal the
+    plain capture — same content, same visible length."""
+    from easymotion import _sanitize_capture, _strip_escapes
+
+    cases = [
+        (f"{ESC}[31mhello{ESC}[0m world", "hello world"),
+        (f"{ESC}[1;32m中文{ESC}[m x{ESC}[38;5;208my{ESC}[0m", "中文 xy"),
+        ("no colors at all", "no colors at all"),
+    ]
+    for color_line, plain_line in cases:
+        assert _strip_escapes(_sanitize_capture(color_line)) == plain_line
+
+
+def test_render_color_line(tmux_mode):
+    from easymotion import _render_color_line
+
+    # pads with spaces to exactly `width` visible cells, SGR not counted
+    assert _render_color_line(f"{ESC}[31mab{ESC}[0;2m", 5) == f"{ESC}[31mab{ESC}[0;2m   "
+    # wide chars count as 2 cells
+    assert _render_color_line("中", 4) == "中  "
+    # tabs expand against pane-local stops (position-dependent on 3.6+)
+    expanded = _render_color_line("a\tb", 12)
+    if tmux_mode >= (3, 6):
+        assert expanded == "a" + " " * 7 + "b" + " " * 3
+    else:
+        assert expanded == "a" + " " * 8 + "b" + " " * 2
 
 
 def test_visual_slice_truncates_by_cells_not_chars():
@@ -1480,6 +1544,54 @@ def test_setup_logging_survives_early_logging_call(tmp_path, monkeypatch):
             h.close()
         root.handlers = saved_handlers
         root.disabled = saved_disabled
+
+
+@requires_tmux
+def test_capture_pane_preserve_colors(tmux_server):
+    """Integration: the color capture must carry SGR codes while the plain
+    capture (and thus all matching logic) stays byte-identical to a capture
+    with the option off."""
+    tmux_server.send_keys(
+        "clear && printf '\\033[31mRED\\033[0m plain \\033[1;32mGREEN\\033[0m\\n'",
+        "Enter",
+    )
+    time.sleep(0.4)
+
+    def make_pane():
+        p = PaneInfo(
+            tmux_server.pane_id, active=True,
+            start_y=0, height=10, start_x=0, width=30,
+        )
+        return p
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        plain_off = tmux_capture_pane(make_pane())
+        pane = make_pane()
+        plain_on = tmux_capture_pane(pane, preserve_colors=True)
+
+    # plain capture identical with/without the option
+    assert plain_on == plain_off
+    assert not pane.color_lines == []
+    colored = "\n".join(pane.color_lines)
+    assert "\x1b[31m" in colored and "RED" in colored
+    # sanitized+stripped color lines match plain lines (alignment invariant)
+    from easymotion import _sanitize_capture, _strip_escapes
+
+    for cl, pl in zip(pane.color_lines, plain_on):
+        assert _strip_escapes(_sanitize_capture(cl)).rstrip() == pl.rstrip()
+
+    # overlay background rendering carries dim + original colors
+    from easymotion import _dim_preserving, _render_color_line
+
+    row = next(cl for cl in pane.color_lines if "RED" in cl)
+    rendered = _render_color_line(_dim_preserving(_sanitize_capture(row)), 30)
+    # original color survives; note tmux normalizes SGR on capture (e.g.
+    # emits ESC[39m rather than ESC[0m), so a reset may legitimately be
+    # absent here — _dim_preserving's substitution is covered by its unit
+    # test. The dim prefix itself is added by the draw layer.
+    assert "\x1b[31m" in rendered
+    # padded to exactly the requested width in visible cells
+    assert len(_strip_escapes(rendered)) == 30
 
 
 def test_get_startup_info_failure_returns_none(tmp_path, monkeypatch):
