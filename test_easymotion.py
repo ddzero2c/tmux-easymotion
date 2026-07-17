@@ -247,6 +247,40 @@ def test_render_color_line(tmux_mode):
         assert expanded == "a" + " " * 8 + "b" + " " * 2
 
 
+def test_bg_at():
+    from easymotion import _bg_at
+
+    line = f"a{ESC}[44mBB{ESC}[0m c"
+    assert _bg_at(line, 0) == ""  # before bg starts
+    assert _bg_at(line, 1) == "44"
+    assert _bg_at(line, 2) == "44"
+    assert _bg_at(line, 3) == ""  # reset applies before this cell
+    # 256-color and truecolor backgrounds
+    assert _bg_at(f"{ESC}[48;5;208mX", 0) == "48;5;208"
+    assert _bg_at(f"{ESC}[48;2;1;2;3mX", 0) == "48;2;1;2;3"
+    # foreground codes don't leak into bg state (args consumed correctly)
+    assert _bg_at(f"{ESC}[38;5;44mX", 0) == ""
+    # 49 resets bg only
+    assert _bg_at(f"{ESC}[44ma{ESC}[49mb", 1) == ""
+    # bright bg (100-107)
+    assert _bg_at(f"{ESC}[101mx", 0) == "101"
+    # wide char occupies two columns; bg persists across it
+    assert _bg_at(f"{ESC}[41m中x", 2) == "41"
+
+
+def test_draw_hint_char_keeps_bg(capsys):
+    from easymotion import AnsiSequence, _draw_hint_char
+
+    screen = AnsiSequence()
+    _draw_hint_char(screen, 0, 0, "a", screen.A_HINT1, "44")
+    out = capsys.readouterr().out
+    # hint fg, original bg re-asserted, trailing reset
+    assert f"{ESC}[1;31m" in out and f"{ESC}[44m" in out and out.endswith(f"{ESC}[0m")
+    # without bg falls back to plain addstr path (no bg sequence)
+    _draw_hint_char(screen, 0, 0, "a", screen.A_HINT1, "")
+    assert f"{ESC}[44m" not in capsys.readouterr().out
+
+
 def test_visual_slice_truncates_by_cells_not_chars():
     """line[:pane.width] string-slicing overflows a pane when the line
     contains wide chars. visual_slice truncates by visual cells."""

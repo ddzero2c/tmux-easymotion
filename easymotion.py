@@ -546,6 +546,63 @@ def _render_color_line(line: str, width: int) -> str:
     return "".join(out)
 
 
+def _apply_bg(bg: str, codes: str) -> str:
+    """Fold one SGR code string into the running background state.
+    Tracks ONLY background-affecting codes; foreground/attribute codes are
+    skipped (38;5;N / 38;2;r;g;b consume their arguments so following
+    codes aren't misread)."""
+    parts = codes.split(";")
+    i = 0
+    while i < len(parts):
+        p = parts[i]
+        if p in ("", "0", "49"):
+            bg = ""
+        elif p.isdigit() and (40 <= int(p) <= 47 or 100 <= int(p) <= 107):
+            bg = p
+        elif p in ("38", "48") and i + 1 < len(parts):
+            if parts[i + 1] == "5":
+                if p == "48" and i + 2 < len(parts):
+                    bg = ";".join(parts[i : i + 3])
+                i += 2
+            elif parts[i + 1] == "2":
+                if p == "48" and i + 4 < len(parts):
+                    bg = ";".join(parts[i : i + 5])
+                i += 4
+        i += 1
+    return bg
+
+
+def _bg_at(line: str, target_col: int) -> str:
+    """Active background SGR fragment (e.g. "44", "48;5;208") at visible
+    column ``target_col`` of a sanitized color line; "" means default.
+    Used to keep a hint cell's original background when drawing over it."""
+    bg = ""
+    col = 0
+    i = 0
+    n = len(line)
+    while i < n:
+        m = _SGR_RE.match(line, i)
+        if m:
+            bg = _apply_bg(bg, m.group()[2:-1])
+            i = m.end()
+            continue
+        if col >= target_col:
+            break
+        col += get_char_width(line[i], col)
+        i += 1
+    return bg
+
+
+def _draw_hint_char(screen, y, x, ch, attr, bg):
+    """Draw one hint character; on the ANSI backend re-assert the cell's
+    original background so hints don't punch holes in colored regions."""
+    if bg and isinstance(screen, AnsiSequence):
+        seq = screen.transform_attr(attr)
+        screen.addraw(y, x, f"{seq}\x1b[{bg}m{ch}{screen.RESET}")
+    else:
+        screen.addstr(y, x, ch, attr)
+
+
 def _expand_tabs(line: str) -> str:
     """Replace tabs with spaces using tmux's pane-local tab stops, so
     curses' screen-absolute tab handling can't disagree with tmux's
@@ -1185,20 +1242,24 @@ def update_hints_display(screen, positions, current_key):
     screen.refresh()
 
 
-def draw_all_hints(positions, terminal_height, screen):
-    """Draw all hints across all panes"""
+def draw_all_hints(positions, terminal_height, screen, hint_bgs=None):
+    """Draw all hints across all panes. ``hint_bgs`` maps
+    (screen_y, screen_x) -> (bg1, bg2) original-background SGR fragments
+    for the two hint cells (color-preserving ANSI overlay only)."""
     for screen_y, screen_x, pane_right_edge, char, next_char, hint in positions:
         if screen_y >= terminal_height:
             continue
 
+        bg1, bg2 = (hint_bgs or {}).get((screen_y, screen_x), ("", ""))
+
         # Draw first character of hint
-        screen.addstr(screen_y, screen_x, hint[0], screen.A_HINT1)
+        _draw_hint_char(screen, screen_y, screen_x, hint[0], screen.A_HINT1, bg1)
 
         # Draw second character if hint has two chars and space allows
         if len(hint) > 1:
             next_x = screen_x + get_char_width(char)
             if next_x < pane_right_edge:
-                screen.addstr(screen_y, next_x, hint[1], screen.A_HINT2)
+                _draw_hint_char(screen, screen_y, next_x, hint[1], screen.A_HINT2, bg2)
 
     screen.refresh()
 
@@ -1275,6 +1336,7 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
 
     # Create flat positions list with all needed info
     positions = []
+    hint_bgs = {}
     for hint, (pane, line_num, visual_col) in hint_mapping.items():
         # make sure index is in valid range
         if line_num < len(pane.lines):
@@ -1284,6 +1346,14 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
             if true_col < len(line):
                 char = line[true_col]
                 next_char = line[true_col + 1] if true_col + 1 < len(line) else ""
+                if preserve_colors and line_num < len(pane.color_lines):
+                    # original background at the two hint cells, so hints
+                    # drawn over colored regions keep the cell's bg
+                    cline = _sanitize_capture(pane.color_lines[line_num])
+                    hint_bgs[(pane.start_y + line_num, pane.start_x + visual_col)] = (
+                        _bg_at(cline, visual_col),
+                        _bg_at(cline, visual_col + get_char_width(char, visual_col)),
+                    )
                 positions.append(
                     (
                         pane.start_y + line_num,  # screen_y
@@ -1305,7 +1375,7 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
         config.horizontal_border,
         preserve_colors,
     )
-    draw_all_hints(positions, terminal_height, screen)
+    draw_all_hints(positions, terminal_height, screen, hint_bgs)
     overlay_window_id = startup.window_id or get_current_window_id()
     sh(["tmux", "select-window", "-t", overlay_window_id])
 
@@ -1344,8 +1414,14 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
             )
             for screen_y, screen_x, _, _, _, hint in positions:
                 if hint.startswith(key_sequence) and len(hint) > len(key_sequence):
-                    screen.addstr(
-                        screen_y, screen_x, hint[len(key_sequence)], screen.A_HINT2
+                    bg1, _ = hint_bgs.get((screen_y, screen_x), ("", ""))
+                    _draw_hint_char(
+                        screen,
+                        screen_y,
+                        screen_x,
+                        hint[len(key_sequence)],
+                        screen.A_HINT2,
+                        bg1,
                     )
             screen.refresh()
         else:
