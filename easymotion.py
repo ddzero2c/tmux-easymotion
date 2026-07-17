@@ -130,9 +130,6 @@ class Config:
         default="─", metadata={"opt": "@easymotion-horizontal-border"}
     )
     use_curses: bool = field(default=False, metadata={"opt": "@easymotion-use-curses"})
-    preserve_colors: bool = field(
-        default=False, metadata={"opt": "@easymotion-preserve-colors"}
-    )
     hint1_fg: str = field(default="1;31", metadata={"opt": "@easymotion-hint1-fg"})
     hint2_fg: str = field(default="1;32", metadata={"opt": "@easymotion-hint2-fg"})
     dim: str = field(default="2", metadata={"opt": "@easymotion-dim"})
@@ -1216,9 +1213,9 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
     # Null-object so every fallback below reads uniformly.
     startup = startup or StartupInfo(None, None, "")
 
-    preserve_colors = config.preserve_colors and not config.use_curses
-    if config.preserve_colors and config.use_curses:
-        logging.debug("@easymotion-preserve-colors ignored: curses backend")
+    # The ANSI backend always keeps the pane's original colors (dimmed) in
+    # the overlay; curses can't replay raw SGR, so it keeps the plain path.
+    preserve_colors = not config.use_curses
 
     panes, max_x = init_panes(startup.panes_info, preserve_colors)
 

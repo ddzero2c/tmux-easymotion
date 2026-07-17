@@ -45,8 +45,7 @@ Press `prefix` + `I` to install
 | `@easymotion-copy-mode-no-prefix` | `false` | Bind keys directly in copy mode (no prefix required) |
 | `@easymotion-vertical-border` | `│` | Vertical border character |
 | `@easymotion-horizontal-border` | `─` | Horizontal border character |
-| `@easymotion-use-curses` | `false` | Use curses instead of ANSI sequences |
-| `@easymotion-preserve-colors` | `false` | Overlay keeps the pane's original colors, dimmed (ANSI backend only; ignored with `@easymotion-use-curses`) |
+| `@easymotion-use-curses` | `false` | Use curses instead of ANSI sequences (plain, color-free overlay) |
 | `@easymotion-hint1-fg` | `1;31` | SGR color code for the first hint character (bold red) |
 | `@easymotion-hint2-fg` | `1;32` | SGR color code for the second hint character (bold green) |
 | `@easymotion-dim` | `2` | SGR color code for the dimmed background text |
