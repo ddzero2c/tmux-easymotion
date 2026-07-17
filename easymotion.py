@@ -765,34 +765,50 @@ def tmux_move_cursor(pane, line_num, true_col):
         x("-N", str(first_non_empty), "cursor-down")
         x("start-of-line")
 
-    # In a scrolled pane whose visible top row is the continuation of a
-    # wrapped logical line, the start-of-line calls above walk ABOVE the
-    # view and shift scroll_position — every row count would then be off
-    # by the shift. Don't assume where the cursor ended up: read it back
-    # and correct against the measured position. The read is a separate
-    # invocation (not chained into the batch) because older tmux evaluates
-    # display-message before queued mode commands have been processed.
-    sh_tmux_batch(cmds)
-    out = sh(
-        ["tmux", "display-message", "-p", "-t", pid,
-         "#{scroll_position},#{copy_cursor_y}"]
-    ).strip()
-    new_scroll, cursor_row = (int(v or 0) for v in out.split(","))
+    if pane.scroll_position > 0:
+        # Scrolled pane: if the visible top row is the continuation of a
+        # wrapped logical line, the start-of-line calls above walk ABOVE
+        # the view and shift scroll_position — every row count would then
+        # be off by the shift. Don't assume where the cursor ended up:
+        # read it back and correct against the measured position. A
+        # scrolled pane is by definition already in copy-mode, so the
+        # read can't race with copy-mode entry (which is why this
+        # measured path is NOT used for unscrolled panes: there, older
+        # tmux can report stale state right after entering the mode).
+        sh_tmux_batch(cmds)
+        out = sh(
+            ["tmux", "display-message", "-p", "-t", pid,
+             "#{scroll_position},#{copy_cursor_y}"]
+        ).strip()
+        new_scroll, cursor_row = (int(v or 0) for v in out.split(","))
 
-    # The captured line_num is a row of the view at pane.scroll_position;
-    # in the (possibly shifted) current view it sits `shift` rows lower.
-    shift = new_scroll - pane.scroll_position
-    delta = line_num + shift - cursor_row
+        # The captured line_num is a row of the view at
+        # pane.scroll_position; in the (possibly shifted) current view it
+        # sits `shift` rows lower.
+        shift = new_scroll - pane.scroll_position
+        delta = line_num + shift - cursor_row
 
-    cmds = []
-    if delta > 0:
-        x("-N", str(delta), "cursor-down")
-    elif delta < 0:
-        x("-N", str(-delta), "cursor-up")
+        cmds = []
+        if delta > 0:
+            x("-N", str(delta), "cursor-down")
+        elif delta < 0:
+            x("-N", str(-delta), "cursor-up")
+        if true_col > 0:
+            x("-N", str(true_col), "cursor-right")
+        if cmds:
+            sh_tmux_batch(cmds)
+        return
+
+    # Unscrolled pane: single blind batch. The walk above already
+    # descended first_non_empty rows; finish the descent and move right.
+    rows_remaining = line_num
+    if 0 < first_non_empty <= line_num:
+        rows_remaining -= first_non_empty
+    if rows_remaining > 0:
+        x("-N", str(rows_remaining), "cursor-down")
     if true_col > 0:
         x("-N", str(true_col), "cursor-right")
-    if cmds:
-        sh_tmux_batch(cmds)
+    sh_tmux_batch(cmds)
 
 
 def assign_hints_by_distance(
