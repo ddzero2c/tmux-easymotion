@@ -22,6 +22,7 @@ from easymotion import (
     get_tmux_option,
     get_startup_info,
     get_true_position,
+    tmux_capture_pane,
     tmux_move_cursor,
     update_hints_display,
     visual_slice,
@@ -1480,6 +1481,78 @@ def test_setup_logging_survives_early_logging_call(tmp_path, monkeypatch):
             h.close()
         root.handlers = saved_handlers
         root.disabled = saved_disabled
+
+
+@requires_tmux
+def test_cursor_jump_scrolled_with_wrapped_top(tmux_server):
+    """Regression: in a scrolled pane whose visible TOP row is the
+    continuation of a wrapped logical line, start-of-line walks above the
+    view and shifts scroll_position — row counts based on the captured
+    view were then off by the shift, landing the jump on the wrong line."""
+    pane_id = tmux_server.pane_id
+
+    def tmx(*args):
+        return subprocess.run(
+            ["tmux", "-L", tmux_server.server_name, *args],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+
+    # one line wide enough to wrap (30-col test pane), then numbered lines
+    tmux_server.send_keys("clear; printf 'W%.0s' {1..70}; echo; "
+                          "for i in {1..20}; do echo LINE_$i; done", "Enter")
+    time.sleep(0.4)
+    tmx("copy-mode", "-t", pane_id)
+
+    # find a scroll position whose visible top row is a wrap continuation:
+    # there, top-line + start-of-line walks above the view and shifts
+    # scroll — the exact condition under test
+    trigger_scroll = None
+    for s in range(1, 30):
+        tmx("send-keys", "-X", "-t", pane_id, "-N", "99", "scroll-down")
+        tmx("send-keys", "-X", "-t", pane_id, "-N", str(s), "scroll-up")
+        before = tmx("display-message", "-p", "-t", pane_id,
+                     "#{scroll_position}")
+        if before != str(s):  # clamped: ran out of history
+            break
+        tmx("send-keys", "-X", "-t", pane_id, "top-line")
+        tmx("send-keys", "-X", "-t", pane_id, "start-of-line")
+        after = tmx("display-message", "-p", "-t", pane_id,
+                    "#{scroll_position}")
+        if after != before:
+            trigger_scroll = s
+            break
+    assert trigger_scroll is not None, "no wrap-continuation top row found"
+
+    # restore the trigger scroll state
+    tmx("send-keys", "-X", "-t", pane_id, "-N", "99", "scroll-down")
+    tmx("send-keys", "-X", "-t", pane_id, "-N", str(trigger_scroll), "scroll-up")
+    time.sleep(0.1)
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        pane.lines = tmux_capture_pane(pane)
+        # pick a stable target: first LINE_ row in the captured view
+        target_line = next(i for i, ln in enumerate(pane.lines)
+                           if ln.startswith("LINE_"))
+        expected_text = pane.lines[target_line]
+        tmux_move_cursor(pane, target_line, 2)
+
+    time.sleep(0.2)
+    # verify the cursor sits on the expected content line, regardless of
+    # any view shift: read the char under the cursor's row via the
+    # cursor-relative capture
+    out = subprocess.run(
+        ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
+         "-t", pane_id, "#{copy_cursor_y},#{copy_cursor_x},#{scroll_position}"],
+        capture_output=True, text=True).stdout.strip()
+    y, x, scroll = (int(v or 0) for v in out.split(","))
+    assert x == 2
+    row_text = subprocess.run(
+        ["tmux", "-L", tmux_server.server_name, "capture-pane", "-p",
+         "-t", pane_id, "-S", str(-scroll),
+         "-E", str(pane.height - 1 - scroll)],
+        capture_output=True, text=True).stdout.split("\n")[y]
+    assert row_text.rstrip() == expected_text.rstrip()
 
 
 def test_get_startup_info_failure_returns_none(tmp_path, monkeypatch):

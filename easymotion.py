@@ -761,18 +761,35 @@ def tmux_move_cursor(pane, line_num, true_col):
     # run start-of-line to prime lastsx > 0, then absorb the walk into
     # the main descent so we don't pay an extra cursor-up round-trip.
     first_non_empty = next((i for i, line in enumerate(pane.lines) if line), 0)
-    rows_remaining = line_num
     if 0 < first_non_empty <= line_num:
         x("-N", str(first_non_empty), "cursor-down")
         x("start-of-line")
-        rows_remaining -= first_non_empty
 
-    if rows_remaining > 0:
-        x("-N", str(rows_remaining), "cursor-down")
+    # In a scrolled pane whose visible top row is the continuation of a
+    # wrapped logical line, the start-of-line calls above walk ABOVE the
+    # view and shift scroll_position — every row count would then be off
+    # by the shift. Don't assume where the cursor ended up: read it back
+    # in the same batch and correct against the measured position.
+    cmds.append(
+        ["display-message", "-p", "-t", pid, "#{scroll_position},#{copy_cursor_y}"]
+    )
+    out = sh_tmux_batch(cmds).strip().split("\n")[-1]
+    new_scroll, cursor_row = (int(v or 0) for v in out.split(","))
+
+    # The captured line_num is a row of the view at pane.scroll_position;
+    # in the (possibly shifted) current view it sits `shift` rows lower.
+    shift = new_scroll - pane.scroll_position
+    delta = line_num + shift - cursor_row
+
+    cmds = []
+    if delta > 0:
+        x("-N", str(delta), "cursor-down")
+    elif delta < 0:
+        x("-N", str(-delta), "cursor-up")
     if true_col > 0:
         x("-N", str(true_col), "cursor-right")
-
-    sh_tmux_batch(cmds)
+    if cmds:
+        sh_tmux_batch(cmds)
 
 
 def assign_hints_by_distance(
