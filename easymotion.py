@@ -366,10 +366,14 @@ def setup_logging(use_curses: bool = False):
         return
 
     log_file = os.path.expanduser("~/easymotion.log")
+    # force=True: any logging call made before this point (e.g. sh() debug
+    # logging inside the batched startup query) auto-installs a stderr
+    # handler, which would turn this basicConfig into a silent no-op.
     logging.basicConfig(
         filename=log_file,
         level=logging.DEBUG,
         format=f"%(asctime)s - %(levelname)s - {'CURSE' if use_curses else 'ANSI'} - %(message)s",
+        force=True,
     )
 
 
@@ -604,6 +608,11 @@ def get_startup_info() -> Optional[StartupInfo]:
     try:
         return _fetch_startup_info()
     except Exception:
+        # Logging isn't configured this early in the happy path (options
+        # come from this very query); set it up now so the failure lands
+        # in the log file instead of stderr. The lazy option fetch inside
+        # setup_logging still works when only parsing failed.
+        setup_logging()
         logging.error("Batched startup query failed", exc_info=True)
         return None
 
@@ -1076,7 +1085,7 @@ def draw_all_hints(positions, terminal_height, screen):
 def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
     setup_logging(config.use_curses)
     logging.info(
-        f"Pre-main (interpreter+imports+startup query) took: "
+        f"Pre-main (startup query + config) took: "
         f"{time.perf_counter() - _SCRIPT_START:.3f} seconds"
     )
     # Null-object so every fallback below reads uniformly.
