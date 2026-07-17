@@ -608,6 +608,11 @@ def get_startup_info() -> Optional[StartupInfo]:
     try:
         return _fetch_startup_info()
     except Exception:
+        # Logging isn't configured this early in the happy path (options
+        # come from this very query); set it up now so the failure lands
+        # in the log file instead of stderr. The lazy option fetch inside
+        # setup_logging still works when only parsing failed.
+        setup_logging()
         logging.error("Batched startup query failed", exc_info=True)
         return None
 

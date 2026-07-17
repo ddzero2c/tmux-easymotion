@@ -1457,15 +1457,34 @@ def test_setup_logging_survives_early_logging_call(tmp_path, monkeypatch):
         root.disabled = saved_disabled
 
 
-def test_get_startup_info_failure_returns_none():
+def test_get_startup_info_failure_returns_none(tmp_path, monkeypatch):
     """A failing batch (e.g. no tmux/client) must degrade to None so main
-    falls back to the lazy per-call queries instead of crashing."""
+    falls back to the lazy per-call queries instead of crashing — and the
+    failure must land in the debug log file, not stderr."""
+    import logging
+
+    log_file = tmp_path / "easymotion.log"
+    monkeypatch.setattr(
+        "os.path.expanduser", lambda p: str(log_file) if p.startswith("~") else p
+    )
+    monkeypatch.setattr(easymotion, "_tmux_options", {"@easymotion-debug": "true"})
+    root = logging.getLogger()
+    saved_handlers, root.handlers = root.handlers, []
+    saved_disabled = root.disabled
 
     def boom(cmd):
         raise subprocess.CalledProcessError(1, cmd)
 
-    with patch("easymotion.sh", boom):
-        assert get_startup_info() is None
+    try:
+        with patch("easymotion.sh", boom):
+            assert get_startup_info() is None
+        logging.shutdown()
+        assert "Batched startup query failed" in log_file.read_text()
+    finally:
+        for h in root.handlers:
+            h.close()
+        root.handlers = saved_handlers
+        root.disabled = saved_disabled
 
 
 @requires_tmux
