@@ -1412,6 +1412,7 @@ def test_get_startup_info(tmux_server):
                 patch.dict("os.environ", {"TMUX_PANE": ""}):
             info = get_startup_info()
 
+        assert info.panes_info is not None
         assert [p.pane_id for p in info.panes_info] == [tmux_server.pane_id]
         pane = info.panes_info[0]
         assert pane.active and pane.width == tmux_server.width
