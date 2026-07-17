@@ -134,6 +134,31 @@ def test_find_matches_visual_col_after_tab(tmux_mode):
     assert visual_col == expected
 
 
+def test_find_matches_visual_col_cjk_tab_mixed(tmux_mode):
+    """Regression: find_matches computes visual_col incrementally (lazily
+    advanced between matches) instead of get_string_width(line[:pos]).
+    A line mixing wide chars and a tab must yield the same columns —
+    including the position-dependent tab width on tmux >= 3.6."""
+    pane = PaneInfo(
+        pane_id="%0", active=True, start_y=0, height=10, start_x=0, width=80
+    )
+    line = "x中\tx漢x"
+    pane.lines = [line]
+
+    matches = find_matches([pane], "x")
+    cols = [col for (_, _, col) in matches]
+
+    if tmux_mode >= (3, 6):
+        # x=0 | 中=1-2 | tab 3-7 (5 cells to next stop) | x=8 | 漢=9-10 | x=11
+        assert cols == [0, 8, 11]
+    else:
+        # pre-3.6: tab is always 8 cells → x at 11, x at 14
+        assert cols == [0, 11, 14]
+
+    # must agree with the prefix-width helper the old implementation used
+    assert cols == [get_string_width(line[:i]) for i, c in enumerate(line) if c == "x"]
+
+
 def test_expand_tabs_uses_pane_local_stops(tmux_mode):
     """Tabs must be expanded against pane-local tab stops so that, after
     expansion, the line renders identically in any pane regardless of its
