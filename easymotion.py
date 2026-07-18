@@ -673,6 +673,8 @@ class PaneInfo:
         "cursor_x",
         "history_size",
         "zoomed",
+        "was_in_mode",
+        "frozen",
     )
 
     def __init__(self, pane_id, active, start_y, height, start_x, width):
@@ -690,6 +692,8 @@ class PaneInfo:
         self.cursor_x = 0
         self.history_size = 0
         self.zoomed = False
+        self.was_in_mode = False
+        self.frozen = False
 
 
 def get_terminal_size():
@@ -740,18 +744,64 @@ def getch(input_str=None, num_chars=1):
 
 
 def tmux_capture_pane(pane):
-    """Optimized pane content capture"""
+    """Freeze the pane and capture its (now frozen) content.
+
+    Entering copy-mode freezes the pane's view and coordinate system at
+    that instant (semantics locked by test_copy_mode_freezes_view), so
+    everything captured here stays valid for the whole overlay session —
+    streaming output and in-place TUI redraws can no longer invalidate
+    hint coordinates. The capture reads the LIVE grid, so history_size is
+    read before and after in the same invocation: if output landed in
+    between, the capture doesn't match the frozen frame — retry until
+    stable (the window is sub-millisecond; one retry in practice).
+
+    Panes frozen here must be released via release_frozen().
+    """
     if not pane.height or not pane.width:
         return []
 
-    cmd = ["tmux", "capture-pane", "-p", "-t", pane.pane_id]
+    base = ["capture-pane", "-p", "-t", pane.pane_id]
     if pane.scroll_position > 0:
         end_pos = -(pane.scroll_position - pane.height + 1)
-        cmd.extend(["-S", str(-pane.scroll_position), "-E", str(end_pos)])
+        base.extend(["-S", str(-pane.scroll_position), "-E", str(end_pos)])
 
-    # Keep literal tabs: cursor-right steps through tmux's cell buffer
-    # one char at a time, so true_col must count against this same string.
-    return sh(cmd)[:-1].split("\n")[: pane.height]
+    hist_fmt = ["display-message", "-p", "-t", pane.pane_id, "#{history_size}"]
+    for _ in range(3):
+        cmds = []
+        if not pane.frozen and not pane.copy_mode:
+            cmds.append(["copy-mode", "-t", pane.pane_id])
+        cmds += [hist_fmt, base, hist_fmt]
+        out = sh_tmux_batch(cmds)[:-1].split("\n")
+        hist_a, rows, hist_b = out[0], out[1:-1], out[-1]
+        if not pane.frozen:
+            pane.was_in_mode = pane.copy_mode
+            pane.frozen = True
+            pane.copy_mode = True
+        if hist_a == hist_b:
+            # Keep literal tabs: cursor-right steps through tmux's cell
+            # buffer one char at a time, so true_col must count against
+            # this same string.
+            return rows[: pane.height]
+    return rows[: pane.height]
+
+
+# Panes frozen by the current run — released by main() on every normal
+# exit path; __main__'s finally releases leftovers after exceptions.
+_live_panes: list = []
+
+
+def release_frozen(panes, keep=None):
+    """Leave copy-mode on every pane WE froze (not ones the user had in
+    copy-mode already), except ``keep`` (the jump target stays put)."""
+    cmds = []
+    for p in panes:
+        if p.frozen and p is not keep and not p.was_in_mode:
+            cmds.append(["send-keys", "-X", "-t", p.pane_id, "cancel"])
+        p.frozen = False
+    if keep is not None:
+        keep.frozen = False
+    if cmds:
+        sh_tmux_batch(cmds)
 
 
 # Diagnostic trace of the last tmux_move_cursor run (tests dump it on
@@ -790,48 +840,26 @@ def tmux_move_cursor(pane, line_num, true_col):
 
     line = pane.lines[line_num] if line_num < len(pane.lines) else ""
 
-    # Pre-move guard + retarget. The capture is a snapshot; between it
-    # and the jump the pane may have (a) streamed new rows — the view is
-    # anchored N-rows-from-the-LIVE-bottom, so all content shifts up by
-    # the history growth: RETARGET to line_num - delta and the jump
-    # follows the content; (b) toggled zoom (resets copy-mode scroll —
-    # cancel); (c) rewritten its screen in place (a TUI redraw: history
-    # unchanged, content moved — caught by re-capturing the target row
-    # and comparing content; cancel on mismatch).
+    # The pane was FROZEN at capture time (copy-mode pins the view and
+    # its coordinates), so captured coordinates cannot go stale — no
+    # retargeting or content re-checks needed. Only two things can break
+    # the frozen state: zoom toggling (resets copy-mode scroll) and the
+    # mode being exited underneath us; cancel in those cases.
     state = sh(
         ["tmux", "display-message", "-p", "-t", pid,
-         "#{history_size},#{window_zoomed_flag}"]
+         "#{window_zoomed_flag},#{pane_in_mode}"]
     ).strip()
-    hist, zoomed = state.split(",")
-    delta = int(hist or 0) - pane.history_size
-    eff_line = line_num - delta
-    NAV_TRACE.append(f"guard state: {state!r} delta={delta} eff_line={eff_line}")
-    if (
-        (zoomed == "1") != pane.zoomed
-        or delta < 0
-        or not 0 <= eff_line < pane.height
-    ):
-        NAV_TRACE.append("guard: CANCELLED (zoom/shift out of view)")
+    zoomed, in_mode = state.split(",")
+    NAV_TRACE.append(f"guard state: {state!r}")
+    if (zoomed == "1") != pane.zoomed or in_mode != "1":
+        NAV_TRACE.append("guard: CANCELLED (zoom/mode changed)")
         sh(["tmux", "display-message", "easymotion: pane changed, jump cancelled"])
         return
-    row_s = eff_line - pane.scroll_position
-    row_now = sh(
-        ["tmux", "capture-pane", "-p", "-t", pid,
-         "-S", str(row_s), "-E", str(row_s)]
-    )[:-1]
-    NAV_TRACE.append(f"guard row_now: {row_now[:40]!r}")
-    if row_now.rstrip() != line.rstrip():
-        NAV_TRACE.append("guard: CANCELLED (content mismatch)")
-        sh(["tmux", "display-message", "easymotion: pane changed, jump cancelled"])
-        return
-    line_num = eff_line
 
     steps = _cursor_steps(line, true_col)
     expected_cell = get_string_width(line[:true_col])
 
     cmds = [["select-pane", "-t", pid]]
-    if not pane.copy_mode:
-        cmds.append(["copy-mode", "-t", pid])
 
     def x(*args):
         cmds.append(["send-keys", "-X", "-t", pid, *args])
@@ -1222,6 +1250,8 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
     # Null-object so every fallback below reads uniformly.
     startup = startup or StartupInfo(None, None, "")
     panes, max_x = init_panes(startup.panes_info)
+    global _live_panes
+    _live_panes = panes
 
     # Get motion type from command line argument
     motion_type = sys.argv[1] if len(sys.argv) > 1 else "s"
@@ -1232,6 +1262,7 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
         search_pattern = getch(sys.argv[2], 1)
         search_pattern = search_pattern.replace("\n", "").replace("\r", "")
         if not search_pattern:
+            release_frozen(panes)
             return
         matches = find_matches(
             panes,
@@ -1246,6 +1277,7 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
         search_pattern = raw_input.replace("\n", "").replace("\r", "")
         logging.debug(f"Search pattern (s2): {repr(search_pattern)}")
         if not search_pattern:
+            release_frozen(panes)
             return
         matches = find_matches(
             panes,
@@ -1260,11 +1292,13 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
     # Check for matches
     if len(matches) == 0:
         sh(["tmux", "display-message", "no match"])
+        release_frozen(panes)
         return
     # If only one match, jump directly
     if len(matches) == 1:
         pane, line_num, col = matches[0]
         true_col = get_true_position(pane.lines[line_num], col)
+        release_frozen(panes, keep=pane)
         tmux_move_cursor(pane, line_num, true_col)
         return
 
@@ -1317,6 +1351,7 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
     while True:
         ch = getch()
         if ch not in config.hints:
+            release_frozen(panes)
             return
 
         key_sequence += ch
@@ -1325,9 +1360,11 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
         if target:
             pane, line_num, col = target
             true_col = get_true_position(pane.lines[line_num], col)
+            release_frozen(panes, keep=pane)
             tmux_move_cursor(pane, line_num, true_col)
             return  # Exit after finding and moving to target
         elif len(key_sequence) >= 2:  # If no target found after 2 chars
+            release_frozen(panes)
             return  # Exit program
         else:
             # Update display to show remaining possible hints
@@ -1346,4 +1383,5 @@ if __name__ == "__main__":
     except Exception as e:
         logging.error(f"Error occurred: {str(e)}", exc_info=True)
     finally:
+        release_frozen(_live_panes)
         screen.cleanup()

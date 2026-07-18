@@ -1254,9 +1254,8 @@ def test_cursor_jump_with_empty_top_rows():
         target_col = pane.lines[target_line].index(target_marker)
 
         with patch("easymotion.sh", server.make_sh_for_server()):
-            lines = pane.lines
             pane = easymotion.get_initial_tmux_info()[0]
-            pane.lines = lines
+            pane.lines = tmux_capture_pane(pane)  # freezes the pane
             tmux_move_cursor(pane, target_line, target_col)
 
         time.sleep(0.1)
@@ -1297,6 +1296,28 @@ def assert_cursor_on_content(server, pane_id, expected_text, expected_col=None):
     )
     if expected_col is not None:
         assert x == expected_col, f"cursor col {x}, expected {expected_col}"
+
+
+def assert_frozen_cursor_on_content(server, pane_id, expected_text, expected_col):
+    """Frozen-frame variant: capture-pane reads the LIVE grid and cannot
+    see a frozen copy-mode view, so read the content under the cursor
+    through copy-mode itself (select to end of line -> buffer holds
+    row[x:], calibrated on 3.4/3.6)."""
+    def tmx(*args):
+        return subprocess.run(
+            ["tmux", "-L", server.server_name, *args],
+            capture_output=True, text=True).stdout.strip()
+    x = int(tmx("display-message", "-p", "-t", pane_id, "#{copy_cursor_x}") or 0)
+    assert x == expected_col, f"cursor col {x}, expected {expected_col}"
+    tmx("send-keys", "-X", "-t", pane_id, "begin-selection")
+    tmx("send-keys", "-X", "-t", pane_id, "end-of-line")
+    tmx("send-keys", "-X", "-t", pane_id, "copy-selection-no-clear")
+    got = tmx("show-buffer")
+    want = expected_text[expected_col:].rstrip()
+    assert got.rstrip() == want, (
+        f"cursor-to-EOL is {got.rstrip()!r}, expected {want!r} "
+        f"(frozen frame mismatch)"
+    )
 
 
 # =============================================================================
@@ -1653,7 +1674,8 @@ def test_capture_leaves_pane_mode_untouched(tmux_server):
     with patch("easymotion.sh", tmux_server.make_sh_for_server()):
         pane = easymotion.get_initial_tmux_info()[0]
         pane.lines = tmux_capture_pane(pane)
-        # simulate overlay abort: no jump happens
+        # simulate overlay abort: main() releases frozen panes
+        easymotion.release_frozen([pane])
     in_mode = subprocess.run(
         ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
          "-t", pane_id, "#{pane_in_mode}"],
@@ -1691,11 +1713,6 @@ def test_jump_preserves_user_scroll(tmux_server):
 
 
 @requires_tmux
-@pytest.mark.xfail(
-    strict=True,
-    reason="freeze-first not implemented: target scrolled out of the live "
-    "view is only reachable once panes are frozen at capture time",
-)
 def test_jump_reaches_content_scrolled_out_during_selection(tmux_server):
     """Freeze-first target behavior: if streamed output pushes the aimed
     row out of the live view while the user is picking a hint, the jump
@@ -1723,15 +1740,10 @@ def test_jump_reaches_content_scrolled_out_during_selection(tmux_server):
          "-t", pane_id, "#{pane_in_mode}"],
         capture_output=True, text=True).stdout.strip()
     assert in_mode == "1", "jump was cancelled; frozen frame should keep it reachable"
-    assert_cursor_on_content(tmux_server, pane_id, "TOP_TARGET", 2)
+    assert_frozen_cursor_on_content(tmux_server, pane_id, "TOP_TARGET", 2)
 
 
 @requires_tmux
-@pytest.mark.xfail(
-    strict=True,
-    reason="freeze-first not implemented: in-place rewrites currently "
-    "cancel; with frozen panes the jump lands on the frozen frame",
-)
 def test_inplace_rewrite_jump_succeeds(tmux_server):
     """Freeze-first target behavior: a TUI rewriting its screen in place
     must not prevent the jump — the frozen frame is what the user saw and
@@ -1756,14 +1768,10 @@ def test_inplace_rewrite_jump_succeeds(tmux_server):
          "-t", pane_id, "#{pane_in_mode}"],
         capture_output=True, text=True).stdout.strip()
     assert in_mode == "1", "jump cancelled; frozen frame should make it succeed"
-    assert_cursor_on_content(tmux_server, pane_id, "ROW_B", 1)
+    assert_frozen_cursor_on_content(tmux_server, pane_id, "ROW_B", 1)
 
 
 @requires_tmux
-@pytest.mark.xfail(
-    strict=True,
-    reason="freeze-first not implemented: capture does not yet freeze panes",
-)
 def test_capture_freezes_pane(tmux_server):
     """Freeze-first target behavior: capturing for the overlay puts the
     pane into copy-mode (freezing its view for the whole hint-selection
@@ -1813,79 +1821,8 @@ def test_jump_follows_streamed_content(tmux_server):
         ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
          "-t", pane_id, "#{pane_in_mode}"],
         capture_output=True, text=True).stdout.strip()
-    assert in_mode == "1", "jump was cancelled; expected content-following retarget"
-    assert_cursor_on_content(tmux_server, pane_id, "BASE_7", 2)
-
-
-@requires_tmux
-def test_jump_cancelled_on_inplace_rewrite(tmux_server):
-    """A TUI (e.g. Claude Code) can rewrite its screen IN PLACE — history
-    size doesn't change, so a history-based guard is blind — yet the
-    captured coordinates now point at different content. The guard must
-    re-check the target row's content and cancel."""
-    pane_id = tmux_server.pane_id
-    # rows printed, then after a delay rewritten in place (tput cuu moves
-    # the cursor up; the rewrite adds no history lines)
-    tmux_server.send_keys(
-        "clear; echo ROW_A; echo ROW_B; echo ROW_C; "
-        "sleep 1.2; tput cuu 3; echo SHIFTED_X; echo ROW_A2",
-        "Enter",
-    )
-    time.sleep(0.4)
-
-    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
-        pane = easymotion.get_initial_tmux_info()[0]
-        pane.lines = tmux_capture_pane(pane)
-        target_line = next(i for i, ln in enumerate(pane.lines) if ln == "ROW_B")
-        hist_before = pane.history_size
-        time.sleep(1.4)  # the in-place rewrite happens now
-        # precondition: history really didn't change (else this test
-        # degenerates into the history-guard case)
-        hist_now = subprocess.run(
-            ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
-             "-t", pane_id, "#{history_size}"],
-            capture_output=True, text=True).stdout.strip()
-        assert int(hist_now) == hist_before, "fixture drift: history changed"
-        tmux_move_cursor(pane, target_line, 1)
-
-    time.sleep(0.1)
-    in_mode = subprocess.run(
-        ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
-         "-t", pane_id, "#{pane_in_mode}"],
-        capture_output=True, text=True).stdout.strip()
-    assert in_mode == "0", (
-        "jump should be cancelled: the target row's content changed via "
-        "an in-place rewrite (history unchanged)"
-    )
-
-
-@requires_tmux
-def test_jump_cancelled_when_content_changed(tmux_server):
-    """T6 — pre-move guard: if the pane produced output between capture
-    and jump (history grew), the jump must be cancelled instead of landing
-    on stale coordinates."""
-    pane_id = tmux_server.pane_id
-    tmux_server.send_keys("clear; for i in 1 2 3; do echo ROW_$i; done", "Enter")
-    time.sleep(0.4)
-
-    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
-        pane = easymotion.get_initial_tmux_info()[0]
-        pane.lines = tmux_capture_pane(pane)
-        # content changes after capture: push enough lines into history
-        tmux_server.send_keys("for i in 4 5 6 7 8 9 10 11 12; do echo ROW_$i; done",
-                              "Enter")
-        time.sleep(0.4)
-        tmux_move_cursor(pane, 1, 2)
-
-    time.sleep(0.1)
-    # guard must refuse to enter copy-mode / jump on stale coordinates
-    in_mode = subprocess.run(
-        ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
-         "-t", pane_id, "#{pane_in_mode}"],
-        capture_output=True, text=True).stdout.strip()
-    assert in_mode == "0", (
-        "jump should be cancelled when pane content changed since capture"
-    )
+    assert in_mode == "1", "jump was cancelled; frozen coordinates should hold"
+    assert_frozen_cursor_on_content(tmux_server, pane_id, "BASE_7", 2)
 
 
 # =============================================================================
