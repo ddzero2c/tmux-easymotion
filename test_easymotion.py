@@ -2111,6 +2111,49 @@ def test_capture_of_user_scrolled_pane_matches_their_view(tmux_server):
     )
 
 
+@requires_tmux
+def test_recapture_after_user_scrolls_within_our_freeze(tmux_server):
+    """After our jump the pane stays frozen; the user then scrolls UP
+    within that frozen snapshot and re-triggers. The capture must show
+    the part of the snapshot they scrolled to — not the cached screen
+    frame, and not live-relative content."""
+    tmux_server.send_keys(
+        "clear; for i in $(seq 1 30); do echo N_$i; done; "
+        "sleep 1.6; for i in $(seq 31 36); do echo N_$i; done",
+        "Enter",
+    )
+    time.sleep(0.4)
+    sn = tmux_server.server_name
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        first = tmux_capture_pane(pane)  # our freeze at scroll 0
+        pane.lines = first
+        target = next(i for i, ln in enumerate(first) if ln.startswith("N_"))
+        tmux_move_cursor(pane, target, 1)  # pane stays frozen
+
+        # the user scrolls up 8 rows inside the frozen snapshot
+        subprocess.run(["tmux", "-L", sn, "send-keys", "-X", "-t",
+                        pane.pane_id, "-N", "8", "scroll-up"], check=True)
+        # what they now see at the top of their view:
+        def read_top():
+            for c in ("clear-selection", "top-line", "start-of-line",
+                      "begin-selection", "end-of-line",
+                      "copy-selection-no-clear"):
+                subprocess.run(["tmux", "-L", sn, "send-keys", "-X", "-t",
+                                pane.pane_id, c], check=True)
+            return subprocess.run(["tmux", "-L", sn, "show-buffer"],
+                                  capture_output=True, text=True).stdout.strip()
+        seen_top = read_top()
+        time.sleep(1.8)  # N_31.. streams into the LIVE grid meanwhile
+
+        pane2 = easymotion.get_initial_tmux_info()[0]
+        frame = tmux_capture_pane(pane2)
+    assert frame[0].strip() == seen_top, (
+        f"capture top is {frame[0].strip()!r}; the user sees {seen_top!r}"
+    )
+
+
 # =============================================================================
 # Integration Tests - get_tmux_option and Config
 # =============================================================================

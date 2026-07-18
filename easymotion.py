@@ -869,14 +869,43 @@ def tmux_capture_pane(pane):
             return frame[: pane.height]
 
     if pane.copy_mode and pane.frozen_hist is not None:
-        # re-trigger on a pane WE froze: serve the cached frozen frame
+        # re-trigger on a pane WE froze. The user may have scrolled up
+        # within the frozen snapshot since: their view spans two regions
+        # of the snapshot — history rows (an immutable, absolute-address
+        # prefix of the live grid, capturable at -(delta + scroll)) and
+        # the frozen screen band (may have been rewritten live since;
+        # served from the cache file written at freeze time).
         pane.frozen = True
         pane.was_in_mode = False  # our freeze: release may cancel it
+        cache = None
         try:
             with open(_frozen_frame_path(pane.pane_id)) as f:
-                return f.read().split("\n")[: pane.height]
+                cache = f.read().split("\n")
         except OSError:
             pass  # cache lost: fall through to a live capture
+        if cache is not None:
+            s1 = pane.scroll_position
+            if s1 == 0:
+                return cache[: pane.height]
+            delta = max(0, pane.history_size - pane.frozen_hist)
+            offset = delta + s1
+            end_pos = -(offset - pane.height + 1)
+            hist_rows = sh(
+                ["tmux", "capture-pane", "-p", "-t", pane.pane_id,
+                 "-S", str(-offset), "-E", str(end_pos)]
+            )[:-1].split("\n")
+            frame = [
+                hist_rows[i] if i < len(hist_rows) else ""
+                for i in range(pane.height)
+            ]
+            # splice: view row i sits at snapshot row hist_frozen+i-s1,
+            # so rows with i >= s1 are inside the frozen screen band and
+            # come from the cache (the live grid may have rewritten them)
+            for i in range(pane.height):
+                band_idx = i - s1
+                if 0 <= band_idx < len(cache):
+                    frame[i] = cache[band_idx]
+            return frame
 
     base = ["capture-pane", "-p", "-t", pane.pane_id]
     if pane.scroll_position > 0:
