@@ -1879,16 +1879,27 @@ class OverlayHarness:
     def wait_gone(self, timeout=5.0):
         if _wait_for(lambda: not self.alive(), timeout):
             return True
-        # timed out: surface the overlay's screen + log for CI diagnostics
+        # timed out: surface overlay state + log for CI diagnostics
         screen = self.tmx("capture-pane", "-p", "-t", self.overlay_pane)
+        state = self.tmx(
+            "display-message", "-p", "-t", self.overlay_pane,
+            "in_mode=#{pane_in_mode} dead=#{pane_dead} "
+            "cmd=#{pane_current_command} pid=#{pane_pid}")
+        try:
+            ps = subprocess.run(
+                ["ps", "-o", "pid,stat,wchan,command", "-p",
+                 state.split("pid=")[-1]],
+                capture_output=True, text=True).stdout
+        except Exception as exc:
+            ps = f"<ps failed: {exc}>"
         try:
             with open(os.path.expanduser("~/easymotion.log")) as f:
-                log_tail = "".join(f.readlines()[-25:])
+                log_tail = "".join(f.readlines()[-60:])
         except OSError as exc:
             log_tail = f"<no log: {exc}>"
         raise AssertionError(
-            f"overlay still open after {timeout}s; its screen:\n{screen}\n"
-            f"--- easymotion.log tail:\n{log_tail}"
+            f"overlay still open after {timeout}s; {state}\nps: {ps}\n"
+            f"screen:\n{screen}\n--- easymotion.log tail:\n{log_tail}"
         )
 
     def pane_in_mode(self, pane_id):
