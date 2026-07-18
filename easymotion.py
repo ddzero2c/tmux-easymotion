@@ -1296,6 +1296,8 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
         )
         screen.refresh()
 
+    logging.debug("awaiting search chars (stdin raw=%s tty=%s)"
+                  % (argv_chars is None, sys.stdin.isatty()))
     raw = getch(argv_chars, num_chars)
     logging.debug(f"Raw input ({motion_type}): {repr(raw)}")
     search_pattern = raw.replace("\n", "").replace("\r", "")
