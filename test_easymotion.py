@@ -1587,6 +1587,48 @@ def test_cursor_jump_combining_chars(tmux_server):
 
 
 @requires_tmux
+def test_jump_cancelled_on_inplace_rewrite(tmux_server):
+    """A TUI (e.g. Claude Code) can rewrite its screen IN PLACE — history
+    size doesn't change, so a history-based guard is blind — yet the
+    captured coordinates now point at different content. The guard must
+    re-check the target row's content and cancel."""
+    pane_id = tmux_server.pane_id
+    # rows printed, then after a delay rewritten in place (tput cuu moves
+    # the cursor up; the rewrite adds no history lines)
+    tmux_server.send_keys(
+        "clear; echo ROW_A; echo ROW_B; echo ROW_C; "
+        "sleep 1.2; tput cuu 3; echo SHIFTED_X; echo ROW_A2",
+        "Enter",
+    )
+    time.sleep(0.4)
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        pane.lines = tmux_capture_pane(pane)
+        target_line = next(i for i, ln in enumerate(pane.lines) if ln == "ROW_B")
+        hist_before = pane.history_size
+        time.sleep(1.4)  # the in-place rewrite happens now
+        # precondition: history really didn't change (else this test
+        # degenerates into the history-guard case)
+        hist_now = subprocess.run(
+            ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
+             "-t", pane_id, "#{history_size}"],
+            capture_output=True, text=True).stdout.strip()
+        assert int(hist_now) == hist_before, "fixture drift: history changed"
+        tmux_move_cursor(pane, target_line, 1)
+
+    time.sleep(0.1)
+    in_mode = subprocess.run(
+        ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
+         "-t", pane_id, "#{pane_in_mode}"],
+        capture_output=True, text=True).stdout.strip()
+    assert in_mode == "0", (
+        "jump should be cancelled: the target row's content changed via "
+        "an in-place rewrite (history unchanged)"
+    )
+
+
+@requires_tmux
 def test_jump_cancelled_when_content_changed(tmux_server):
     """T6 — pre-move guard: if the pane produced output between capture
     and jump (history grew), the jump must be cancelled instead of landing

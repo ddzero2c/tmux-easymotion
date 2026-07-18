@@ -788,21 +788,33 @@ def tmux_move_cursor(pane, line_num, true_col):
         f"h={pane.height} hist={pane.history_size} copy={pane.copy_mode}"
     )
 
-    # Pre-move guard: refuse to jump on stale coordinates — pane content
-    # or zoom state changed since capture (zooming also resets copy-mode
-    # scroll, invalidating everything).
-    state = sh(
-        ["tmux", "display-message", "-p", "-t", pid,
-         "#{history_size},#{window_zoomed_flag}"]
-    ).strip()
+    line = pane.lines[line_num] if line_num < len(pane.lines) else ""
+
+    # Pre-move guard: refuse to jump on stale coordinates. Three ways the
+    # capture can go stale: history grew (streaming output), zoom toggled
+    # (zooming also resets copy-mode scroll), or — invisible to both — a
+    # TUI rewrote its screen IN PLACE (history unchanged); re-capturing
+    # the target row catches that last case by content.
+    row_s = line_num - pane.scroll_position
+    out = sh_tmux_batch(
+        [
+            ["capture-pane", "-p", "-t", pid, "-S", str(row_s), "-E", str(row_s)],
+            ["display-message", "-p", "-t", pid,
+             "#{history_size},#{window_zoomed_flag}"],
+        ]
+    )[:-1].split("\n")
+    state = out[-1]
+    row_now = out[0] if len(out) > 1 else ""
     hist, zoomed = state.split(",")
-    NAV_TRACE.append(f"guard read: {state!r}")
-    if int(hist or 0) != pane.history_size or (zoomed == "1") != pane.zoomed:
+    NAV_TRACE.append(f"guard read: {state!r} row_now={row_now[:40]!r}")
+    if (
+        int(hist or 0) != pane.history_size
+        or (zoomed == "1") != pane.zoomed
+        or row_now.rstrip() != line.rstrip()
+    ):
         NAV_TRACE.append("guard: CANCELLED")
         sh(["tmux", "display-message", "easymotion: pane changed, jump cancelled"])
         return
-
-    line = pane.lines[line_num] if line_num < len(pane.lines) else ""
     steps = _cursor_steps(line, true_col)
     expected_cell = get_string_width(line[:true_col])
 
