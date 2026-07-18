@@ -754,6 +754,11 @@ def tmux_capture_pane(pane):
     return sh(cmd)[:-1].split("\n")[: pane.height]
 
 
+# Diagnostic trace of the last tmux_move_cursor run (tests dump it on
+# failure so CI-only geometry issues carry their own evidence).
+NAV_TRACE: list = []
+
+
 def _cursor_steps(line: str, true_col: int) -> int:
     """copy-mode cursor-right steps to reach string index ``true_col``:
     the cursor moves one grid CELL per step, and zero-width chars
@@ -777,6 +782,11 @@ def tmux_move_cursor(pane, line_num, true_col):
     loop repairs the rest — including restoring the original scroll so
     the user's view doesn't shift."""
     pid = pane.pane_id
+    NAV_TRACE.clear()
+    NAV_TRACE.append(
+        f"target=({line_num},{true_col}) scroll={pane.scroll_position} "
+        f"h={pane.height} hist={pane.history_size} copy={pane.copy_mode}"
+    )
 
     # Pre-move guard: refuse to jump on stale coordinates — pane content
     # or zoom state changed since capture (zooming also resets copy-mode
@@ -786,7 +796,9 @@ def tmux_move_cursor(pane, line_num, true_col):
          "#{history_size},#{window_zoomed_flag}"]
     ).strip()
     hist, zoomed = state.split(",")
+    NAV_TRACE.append(f"guard read: {state!r}")
     if int(hist or 0) != pane.history_size or (zoomed == "1") != pane.zoomed:
+        NAV_TRACE.append("guard: CANCELLED")
         sh(["tmux", "display-message", "easymotion: pane changed, jump cancelled"])
         return
 
@@ -830,6 +842,7 @@ def tmux_move_cursor(pane, line_num, true_col):
             x("-N", str(rows_remaining), "cursor-down")
     if steps > 0:
         x("-N", str(steps), "cursor-right")
+    NAV_TRACE.append(f"first shot: {cmds}")
     sh_tmux_batch(cmds)
 
     # Closed loop: verify the landing against measured state and repair,
@@ -843,6 +856,7 @@ def tmux_move_cursor(pane, line_num, true_col):
              "#{copy_cursor_y},#{copy_cursor_x},#{scroll_position}"]
         ).strip()
         y_now, x_now, scroll_now = (int(v or 0) for v in out.split(","))
+        NAV_TRACE.append(f"verify read: {out!r}")
         k = scroll_now - pane.scroll_position
         dy = line_num + k - y_now
         dx = expected_cell - x_now
@@ -866,6 +880,7 @@ def tmux_move_cursor(pane, line_num, true_col):
             # restore the original view; the cursor (now at line_num + k)
             # stays on its content, ending at view row line_num
             x("-N", str(k), "scroll-down")
+        NAV_TRACE.append(f"correction: {cmds}")
         sh_tmux_batch(cmds)
 
 

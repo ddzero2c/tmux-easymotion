@@ -1163,6 +1163,7 @@ def test_cursor_jump_on_wrapped_line(tmux_server):
         pane = easymotion.get_initial_tmux_info()[0]
         pane.lines = tmux_capture_pane(pane)
         tmux_move_cursor(pane, target_line, target_col)
+        print("NAV_TRACE:", *easymotion.NAV_TRACE, sep="\n  ")
 
     time.sleep(0.1)
 
@@ -1326,6 +1327,7 @@ def test_same_pane_jump(tmux_server):
         pane = easymotion.get_initial_tmux_info()[0]
         pane.lines = tmux_capture_pane(pane)
         tmux_move_cursor(pane, target_line, target_col)
+        print("NAV_TRACE:", *easymotion.NAV_TRACE, sep="\n  ")
 
     time.sleep(0.1)
 
@@ -1369,6 +1371,7 @@ def test_cross_pane_jump(tmux_server):
         )
         pane2.lines = tmux_capture_pane(pane2)
         tmux_move_cursor(pane2, target_line, target_col)
+        print("NAV_TRACE:", *easymotion.NAV_TRACE, sep="\n  ")
 
     time.sleep(0.1)
 
