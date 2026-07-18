@@ -815,6 +815,7 @@ def _reconstruct_user_frozen_frame(pane):
     bottom = _read_frozen_row(pid, "bottom-line")
     # best-effort cursor restore (reading moved it) + paste-stack cleanup
     restore = [["delete-buffer"], ["delete-buffer"],
+               ["send-keys", "-X", "-t", pid, "clear-selection"],
                ["send-keys", "-X", "-t", pid, "top-line"]]
     if pane.cursor_y:
         restore.append(

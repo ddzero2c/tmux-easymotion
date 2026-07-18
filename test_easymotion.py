@@ -1312,7 +1312,9 @@ def read_frozen_view_top(server):
     for c in ("clear-selection", "top-line", "start-of-line",
               "begin-selection", "end-of-line", "copy-selection-no-clear"):
         server.tmx("send-keys", "-X", "-t", server.pane_id, c)
-    return server.tmx("show-buffer")
+    text = server.tmx("show-buffer")
+    server.tmx("send-keys", "-X", "-t", server.pane_id, "clear-selection")
+    return text
 
 
 def assert_frozen_cursor_on_content(server, pane_id, expected_text, expected_col):
@@ -1330,6 +1332,7 @@ def assert_frozen_cursor_on_content(server, pane_id, expected_text, expected_col
     tmx("send-keys", "-X", "-t", pane_id, "end-of-line")
     tmx("send-keys", "-X", "-t", pane_id, "copy-selection-no-clear")
     got = tmx("show-buffer")
+    tmx("send-keys", "-X", "-t", pane_id, "clear-selection")
     want = expected_text[expected_col:].rstrip()
     # end-of-line runs to the LOGICAL line end: on a wrapped row the
     # selection continues into following screen rows, so compare prefix
@@ -2107,6 +2110,12 @@ def test_capture_of_user_scrolled_pane_matches_their_view(tmux_server):
         f"capture shows {frame[0].strip()!r} at the top; the user is "
         f"looking at {seen_top!r}"
     )
+    # the anchor reads must not leave an active selection behind — the
+    # user would find their pane in "select mode"
+    assert tmux_server.tmx(
+        "display-message", "-p", "-t", tmux_server.pane_id,
+        "#{selection_present}",
+    ) in ("0", ""), "anchor reads left an active selection"
 
 
 @requires_tmux
