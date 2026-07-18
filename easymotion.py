@@ -790,31 +790,42 @@ def tmux_move_cursor(pane, line_num, true_col):
 
     line = pane.lines[line_num] if line_num < len(pane.lines) else ""
 
-    # Pre-move guard: refuse to jump on stale coordinates. Three ways the
-    # capture can go stale: history grew (streaming output), zoom toggled
-    # (zooming also resets copy-mode scroll), or — invisible to both — a
-    # TUI rewrote its screen IN PLACE (history unchanged); re-capturing
-    # the target row catches that last case by content.
-    row_s = line_num - pane.scroll_position
-    out = sh_tmux_batch(
-        [
-            ["capture-pane", "-p", "-t", pid, "-S", str(row_s), "-E", str(row_s)],
-            ["display-message", "-p", "-t", pid,
-             "#{history_size},#{window_zoomed_flag}"],
-        ]
-    )[:-1].split("\n")
-    state = out[-1]
-    row_now = out[0] if len(out) > 1 else ""
+    # Pre-move guard + retarget. The capture is a snapshot; between it
+    # and the jump the pane may have (a) streamed new rows — the view is
+    # anchored N-rows-from-the-LIVE-bottom, so all content shifts up by
+    # the history growth: RETARGET to line_num - delta and the jump
+    # follows the content; (b) toggled zoom (resets copy-mode scroll —
+    # cancel); (c) rewritten its screen in place (a TUI redraw: history
+    # unchanged, content moved — caught by re-capturing the target row
+    # and comparing content; cancel on mismatch).
+    state = sh(
+        ["tmux", "display-message", "-p", "-t", pid,
+         "#{history_size},#{window_zoomed_flag}"]
+    ).strip()
     hist, zoomed = state.split(",")
-    NAV_TRACE.append(f"guard read: {state!r} row_now={row_now[:40]!r}")
+    delta = int(hist or 0) - pane.history_size
+    eff_line = line_num - delta
+    NAV_TRACE.append(f"guard state: {state!r} delta={delta} eff_line={eff_line}")
     if (
-        int(hist or 0) != pane.history_size
-        or (zoomed == "1") != pane.zoomed
-        or row_now.rstrip() != line.rstrip()
+        (zoomed == "1") != pane.zoomed
+        or delta < 0
+        or not 0 <= eff_line < pane.height
     ):
-        NAV_TRACE.append("guard: CANCELLED")
+        NAV_TRACE.append("guard: CANCELLED (zoom/shift out of view)")
         sh(["tmux", "display-message", "easymotion: pane changed, jump cancelled"])
         return
+    row_s = eff_line - pane.scroll_position
+    row_now = sh(
+        ["tmux", "capture-pane", "-p", "-t", pid,
+         "-S", str(row_s), "-E", str(row_s)]
+    )[:-1]
+    NAV_TRACE.append(f"guard row_now: {row_now[:40]!r}")
+    if row_now.rstrip() != line.rstrip():
+        NAV_TRACE.append("guard: CANCELLED (content mismatch)")
+        sh(["tmux", "display-message", "easymotion: pane changed, jump cancelled"])
+        return
+    line_num = eff_line
+
     steps = _cursor_steps(line, true_col)
     expected_cell = get_string_width(line[:true_col])
 

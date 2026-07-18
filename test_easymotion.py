@@ -1587,6 +1587,41 @@ def test_cursor_jump_combining_chars(tmux_server):
 
 
 @requires_tmux
+def test_jump_follows_streamed_content(tmux_server):
+    """A streaming pane (ping, tail -f) pushes rows into history between
+    capture and jump. Cancelling every jump would make such panes
+    un-jumpable; instead the jump must RETARGET: the captured row's
+    content moved up by exactly the history growth, so land on the same
+    CONTENT at its new row."""
+    pane_id = tmux_server.pane_id
+    tmux_server.send_keys(
+        "clear; for i in 1 2 3 4 5 6 7 8 9 10; do echo BASE_$i; done; "
+        "sleep 1.2; echo DRIFT_1; echo DRIFT_2",
+        "Enter",
+    )
+    time.sleep(0.4)
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        pane.lines = tmux_capture_pane(pane)
+        target_line = next(
+            i for i, ln in enumerate(pane.lines) if ln == "BASE_7"
+        )
+        time.sleep(1.4)  # DRIFT lines arrive: content shifts up
+        tmux_move_cursor(pane, target_line, 2)
+        print("NAV_TRACE:", *easymotion.NAV_TRACE, sep="\n  ")
+
+    time.sleep(0.1)
+    # must have jumped (not cancelled) and be sitting on BASE_7's content
+    in_mode = subprocess.run(
+        ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
+         "-t", pane_id, "#{pane_in_mode}"],
+        capture_output=True, text=True).stdout.strip()
+    assert in_mode == "1", "jump was cancelled; expected content-following retarget"
+    assert_cursor_on_content(tmux_server, pane_id, "BASE_7", 2)
+
+
+@requires_tmux
 def test_jump_cancelled_on_inplace_rewrite(tmux_server):
     """A TUI (e.g. Claude Code) can rewrite its screen IN PLACE — history
     size doesn't change, so a history-based guard is blind — yet the
