@@ -405,8 +405,16 @@ def calculate_tab_width(position: int, tab_size: int = 8) -> int:
     return tab_size - (position % tab_size)
 
 
+# Zero-width code points beyond combining marks: ZWSP, ZWNJ, ZWJ, VS16.
+_ZERO_WIDTH_CHARS = frozenset("​‌‍️")
+
+
 @functools.lru_cache(maxsize=1024)
 def _char_width_no_tab(char: str) -> int:
+    if char in _ZERO_WIDTH_CHARS or unicodedata.combining(char):
+        return 0
+    # tmux merges combining marks into the preceding cell; zero-width
+    # code points occupy no cell of their own
     return 2 if unicodedata.east_asian_width(char) in "WF" else 1
 
 
@@ -515,7 +523,8 @@ _PANE_FORMAT = (
     "#{pane_id},#{window_zoomed_flag},#{pane_active},"
     "#{pane_top},#{pane_height},#{pane_left},#{pane_width},"
     "#{pane_in_mode},#{scroll_position},"
-    "#{cursor_y},#{cursor_x},#{copy_cursor_y},#{copy_cursor_x}"
+    "#{cursor_y},#{cursor_x},#{copy_cursor_y},#{copy_cursor_x},"
+    "#{history_size}"
 )
 
 
@@ -547,6 +556,7 @@ def _parse_pane_lines(lines) -> list:
             cursor_x,
             copy_cursor_y,
             copy_cursor_x,
+            history_size,
         ) = fields
 
         # Only show all panes in non-zoomed state, or only active pane in zoomed state
@@ -565,6 +575,8 @@ def _parse_pane_lines(lines) -> list:
         # Optimize flag setting
         pane.copy_mode = in_mode == "1"
         pane.scroll_position = int(scroll_pos or 0)
+        pane.history_size = int(history_size or 0)
+        pane.zoomed = zoomed == "1"
 
         # Set cursor position
         if in_mode == "1":  # If in copy mode
@@ -659,6 +671,8 @@ class PaneInfo:
         "scroll_position",
         "cursor_y",
         "cursor_x",
+        "history_size",
+        "zoomed",
     )
 
     def __init__(self, pane_id, active, start_y, height, start_x, width):
@@ -674,6 +688,8 @@ class PaneInfo:
         self.scroll_position = 0
         self.cursor_y = 0
         self.cursor_x = 0
+        self.history_size = 0
+        self.zoomed = False
 
 
 def get_terminal_size():
@@ -738,9 +754,46 @@ def tmux_capture_pane(pane):
     return sh(cmd)[:-1].split("\n")[: pane.height]
 
 
+def _cursor_steps(line: str, true_col: int) -> int:
+    """copy-mode cursor-right steps to reach string index ``true_col``:
+    the cursor moves one grid CELL per step, and zero-width chars
+    (combining marks etc.) ride along with their base cell instead of
+    costing a step of their own."""
+    return sum(1 for ch in line[:true_col] if _char_width_no_tab(ch) > 0)
+
+
 @perf_timer("Moving cursor")
 def tmux_move_cursor(pane, line_num, true_col):
+    """Move the copy-mode cursor to (line_num, true_col) of the captured
+    view: guarded, anchored, verified, corrected.
+
+    Copy-mode movement hazards this routes around (each reproduced in the
+    test suite): start-of-line at the top of the view walks above it when
+    that row continues a wrapped logical line, shifting scroll and every
+    later row count; cursor-right/left wrap across lines instead of
+    clamping; goto-line anchors at the last USED line, not the screen
+    bottom. No single blind command sequence survives all of them, so the
+    first shot uses the cheapest reliable path per state and a read-back
+    loop repairs the rest — including restoring the original scroll so
+    the user's view doesn't shift."""
     pid = pane.pane_id
+
+    # Pre-move guard: refuse to jump on stale coordinates — pane content
+    # or zoom state changed since capture (zooming also resets copy-mode
+    # scroll, invalidating everything).
+    state = sh(
+        ["tmux", "display-message", "-p", "-t", pid,
+         "#{history_size},#{window_zoomed_flag}"]
+    ).strip()
+    hist, zoomed = state.split(",")
+    if int(hist or 0) != pane.history_size or (zoomed == "1") != pane.zoomed:
+        sh(["tmux", "display-message", "easymotion: pane changed, jump cancelled"])
+        return
+
+    line = pane.lines[line_num] if line_num < len(pane.lines) else ""
+    steps = _cursor_steps(line, true_col)
+    expected_cell = get_string_width(line[:true_col])
+
     cmds = [["select-pane", "-t", pid]]
     if not pane.copy_mode:
         cmds.append(["copy-mode", "-t", pid])
@@ -748,67 +801,72 @@ def tmux_move_cursor(pane, line_num, true_col):
     def x(*args):
         cmds.append(["send-keys", "-X", "-t", pid, *args])
 
-    # start-of-line on row 0 (instead of after cursor-down) so it can't
-    # walk into a wrapped *logical* line above the target — issue #18.
-    x("top-line")
-    x("start-of-line")
-
-    # tmux's cursor-down keeps an "at end of line" bias via lastcx/lastsx.
-    # cursor-down on an empty row never updates lastsx, so a later
-    # cursor-down -N drags the cursor to the end of every non-empty row
-    # it crosses (visible on tmux 3.6+ when the pane has leading empty
-    # rows, e.g. Claude Code's UI). Walk to the first non-empty row and
-    # run start-of-line to prime lastsx > 0, then absorb the walk into
-    # the main descent so we don't pay an extra cursor-up round-trip.
-    first_non_empty = next((i for i, line in enumerate(pane.lines) if line), 0)
-    if 0 < first_non_empty <= line_num:
-        x("-N", str(first_non_empty), "cursor-down")
-        x("start-of-line")
-
     if pane.scroll_position > 0:
-        # Scrolled pane: if the visible top row is the continuation of a
-        # wrapped logical line, the start-of-line calls above walk ABOVE
-        # the view and shift scroll_position — every row count would then
-        # be off by the shift. Don't assume where the cursor ended up:
-        # read it back and correct against the measured position. A
-        # scrolled pane is by definition already in copy-mode, so the
-        # read can't race with copy-mode entry (which is why this
-        # measured path is NOT used for unscrolled panes: there, older
-        # tmux can report stale state right after entering the mode).
-        sh_tmux_batch(cmds)
+        # Scrolled pane: the view is necessarily full, so ``goto-line
+        # <scroll>`` lands exactly on the bottom row of the wanted view
+        # without disturbing scroll — immune to the top-of-view wrap
+        # hazard. Climb from there.
+        x("goto-line", str(pane.scroll_position))
+        x("start-of-line")
+        if pane.height - 1 > line_num:
+            x("-N", str(pane.height - 1 - line_num), "cursor-up")
+    else:
+        # Unscrolled pane: top-line is exact (row 0). start-of-line may
+        # still walk above the view when row 0 continues a wrapped line
+        # in history — the verify loop repairs that case. The walk to the
+        # first non-empty row primes tmux's lastcx/lastsx column bias so
+        # cursor-down doesn't drag the cursor to line ends (tmux 3.6+).
+        x("top-line")
+        x("start-of-line")
+        first_non_empty = next(
+            (i for i, ln in enumerate(pane.lines) if ln), 0
+        )
+        rows_remaining = line_num
+        if 0 < first_non_empty <= line_num:
+            x("-N", str(first_non_empty), "cursor-down")
+            x("start-of-line")
+            rows_remaining -= first_non_empty
+        if rows_remaining > 0:
+            x("-N", str(rows_remaining), "cursor-down")
+    if steps > 0:
+        x("-N", str(steps), "cursor-right")
+    sh_tmux_batch(cmds)
+
+    # Closed loop: verify the landing against measured state and repair,
+    # up to two rounds. ``k`` is any view shift the normalization caused
+    # (top row was a wrap continuation): the target content then sits at
+    # line_num + k in the shifted view, and scroll-down k afterwards
+    # restores the user's original view with the cursor still on target.
+    for _ in range(2):
         out = sh(
             ["tmux", "display-message", "-p", "-t", pid,
-             "#{scroll_position},#{copy_cursor_y}"]
+             "#{copy_cursor_y},#{copy_cursor_x},#{scroll_position}"]
         ).strip()
-        new_scroll, cursor_row = (int(v or 0) for v in out.split(","))
-
-        # The captured line_num is a row of the view at
-        # pane.scroll_position; in the (possibly shifted) current view it
-        # sits `shift` rows lower.
-        shift = new_scroll - pane.scroll_position
-        delta = line_num + shift - cursor_row
-
+        y_now, x_now, scroll_now = (int(v or 0) for v in out.split(","))
+        k = scroll_now - pane.scroll_position
+        dy = line_num + k - y_now
+        dx = expected_cell - x_now
+        if dy == 0 and dx == 0 and k == 0:
+            break
         cmds = []
-        if delta > 0:
-            x("-N", str(delta), "cursor-down")
-        elif delta < 0:
-            x("-N", str(-delta), "cursor-up")
-        if true_col > 0:
-            x("-N", str(true_col), "cursor-right")
-        if cmds:
-            sh_tmux_batch(cmds)
-        return
-
-    # Unscrolled pane: single blind batch. The walk above already
-    # descended first_non_empty rows; finish the descent and move right.
-    rows_remaining = line_num
-    if 0 < first_non_empty <= line_num:
-        rows_remaining -= first_non_empty
-    if rows_remaining > 0:
-        x("-N", str(rows_remaining), "cursor-down")
-    if true_col > 0:
-        x("-N", str(true_col), "cursor-right")
-    sh_tmux_batch(cmds)
+        if dy > 0:
+            x("-N", str(dy), "cursor-down")
+        elif dy < 0:
+            x("-N", str(-dy), "cursor-up")
+        if dy != 0:
+            # row changed: rebase the column from the row start
+            x("start-of-line")
+            if steps > 0:
+                x("-N", str(steps), "cursor-right")
+        elif dx > 0:
+            x("-N", str(dx), "cursor-right")
+        elif dx < 0:
+            x("-N", str(-dx), "cursor-left")
+        if k > 0:
+            # restore the original view; the cursor (now at line_num + k)
+            # stays on its content, ending at view row line_num
+            x("-N", str(k), "scroll-down")
+        sh_tmux_batch(cmds)
 
 
 def assign_hints_by_distance(
