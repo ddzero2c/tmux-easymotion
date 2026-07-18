@@ -1876,7 +1876,13 @@ class OverlayHarness:
         return self.window_id in self.tmx("list-windows", "-F", "#{window_id}")
 
     def wait_gone(self, timeout=5.0):
-        return _wait_for(lambda: not self.alive(), timeout)
+        if _wait_for(lambda: not self.alive(), timeout):
+            return True
+        # timed out: surface the overlay's screen for CI diagnostics
+        screen = self.tmx("capture-pane", "-p", "-t", self.overlay_pane)
+        raise AssertionError(
+            f"overlay still open after {timeout}s; its screen:\n{screen}"
+        )
 
     def pane_in_mode(self, pane_id):
         return self.tmx("display-message", "-p", "-t", pane_id,
@@ -1986,11 +1992,11 @@ def test_overlay_early_keys_not_leaked(tmux_server):
          "-t", pane_id], capture_output=True, text=True).stdout
     h = OverlayHarness(tmux_server)
     h.launch("s")
-    # 50ms: past interpreter startup (stdin already raw) but well before
-    # the frame is drawn (~75ms startup). Keys in the first ~25ms sit
-    # below any human keypress interval and may be absorbed by the
-    # canonical line editor — physically unreachable, documented.
-    time.sleep(0.05)
+    # deterministic "raw mode active" signal: stdin switches to raw
+    # before the startup query, and the query is what freezes the pane —
+    # so in_mode==1 guarantees the key lands in the raw input queue, yet
+    # the frame (drawn after all captures) is typically not up yet.
+    assert _wait_for(lambda: h.pane_in_mode(pane_id), 5.0)
     h.send("Z")
     assert h.wait_gone(), "early key should drive the jump"
     assert h.pane_in_mode(pane_id)
