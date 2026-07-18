@@ -524,7 +524,7 @@ _PANE_FORMAT = (
     "#{pane_top},#{pane_height},#{pane_left},#{pane_width},"
     "#{pane_in_mode},#{scroll_position},"
     "#{cursor_y},#{cursor_x},#{copy_cursor_y},#{copy_cursor_x},"
-    "#{history_size}"
+    "#{history_size},#{@easymotion_frozen_hist}"
 )
 
 
@@ -557,6 +557,7 @@ def _parse_pane_lines(lines) -> list:
             copy_cursor_y,
             copy_cursor_x,
             history_size,
+            frozen_hist,
         ) = fields
 
         # Only show all panes in non-zoomed state, or only active pane in zoomed state
@@ -577,6 +578,8 @@ def _parse_pane_lines(lines) -> list:
         pane.scroll_position = int(scroll_pos or 0)
         pane.history_size = int(history_size or 0)
         pane.zoomed = zoomed == "1"
+        # set while WE hold the pane frozen: history size at freeze time
+        pane.frozen_hist = int(frozen_hist) if frozen_hist else None
 
         # Set cursor position
         if in_mode == "1":  # If in copy mode
@@ -680,6 +683,7 @@ class PaneInfo:
         "zoomed",
         "was_in_mode",
         "frozen",
+        "frozen_hist",
     )
 
     def __init__(self, pane_id, active, start_y, height, start_x, width):
@@ -699,6 +703,7 @@ class PaneInfo:
         self.zoomed = False
         self.was_in_mode = False
         self.frozen = False
+        self.frozen_hist = None
 
 
 def get_terminal_size():
@@ -733,28 +738,47 @@ def get_current_window_id():
 
 
 def getch(input_str=None, num_chars=1):
-    """Get character(s) from terminal or file
+    """Get character(s) from the terminal (raw, via os.read — the
+    buffered sys.stdin TextIO layer proved unreliable for raw pty reads
+    on CI runners) or from ``input_str`` when provided.
 
     Args:
         input_str: Optional string. If None, read from stdin.
         num_chars: Number of characters to read (default: 1)
     """
     if input_str is None:
-        # Read from stdin
+        import codecs
+
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        chars = ""
         try:
             tty.setraw(fd)
-            ch = sys.stdin.read(num_chars)
+            while len(chars) < num_chars:
+                data = os.read(fd, 64)
+                if not data:
+                    break
+                chars += decoder.decode(data)
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        ch = chars[:num_chars]
     else:
         ch = input_str[:num_chars]
-    if ch == "\x03":
+    if "\x03" in ch:
         logging.info("Operation cancelled by user")
         exit(1)
 
     return ch
+
+
+def _frozen_frame_path(pane_id: str) -> str:
+    import tempfile
+
+    return os.path.join(
+        tempfile.gettempdir(),
+        f"tmux_easymotion_{os.getuid()}_frame_{pane_id.lstrip('%')}",
+    )
 
 
 def tmux_capture_pane(pane):
@@ -762,17 +786,34 @@ def tmux_capture_pane(pane):
 
     Entering copy-mode freezes the pane's view and coordinate system at
     that instant (semantics locked by test_copy_mode_freezes_view), so
-    everything captured here stays valid for the whole overlay session —
-    streaming output and in-place TUI redraws can no longer invalidate
-    hint coordinates. The capture reads the LIVE grid, so history_size is
-    read before and after in the same invocation: if output landed in
-    between, the capture doesn't match the frozen frame — retry until
-    stable (the window is sub-millisecond; one retry in practice).
+    everything captured here stays valid for the whole overlay session.
+    The capture reads the LIVE grid, so history_size is read before and
+    after in the same invocation and the capture retried until stable.
+
+    A pane can already be frozen by OUR previous jump (the target stays
+    in copy-mode showing the frame the user jumped to). capture-pane
+    cannot see a frozen view and the live grid may have moved on — but
+    the frozen frame was ours to begin with, so it is cached to a
+    per-pane temp file at freeze time and read back here (the
+    @easymotion_frozen_hist pane option marks the freeze as ours). Panes
+    the USER put in copy-mode themselves carry no marker; their frozen
+    view is unknowable (documented limitation) and the live grid is
+    captured.
 
     Panes frozen here must be released via release_frozen().
     """
     if not pane.height or not pane.width:
         return []
+
+    if pane.copy_mode and pane.frozen_hist is not None:
+        # re-trigger on a pane WE froze: serve the cached frozen frame
+        pane.frozen = True
+        pane.was_in_mode = False  # our freeze: release may cancel it
+        try:
+            with open(_frozen_frame_path(pane.pane_id)) as f:
+                return f.read().split("\n")[: pane.height]
+        except OSError:
+            pass  # cache lost: fall through to a live capture
 
     base = ["capture-pane", "-p", "-t", pane.pane_id]
     if pane.scroll_position > 0:
@@ -780,11 +821,16 @@ def tmux_capture_pane(pane):
         base.extend(["-S", str(-pane.scroll_position), "-E", str(end_pos)])
 
     hist_fmt = ["display-message", "-p", "-t", pane.pane_id, "#{history_size}"]
+    mark_fmt = [
+        "set-option", "-pF", "-t", pane.pane_id,
+        "@easymotion_frozen_hist", "#{history_size}",
+    ]
     rows: list = []
     for _ in range(3):
         cmds = []
         if not pane.frozen and not pane.copy_mode:
             cmds.append(["copy-mode", "-t", pane.pane_id])
+            cmds.append(mark_fmt)
         cmds += [hist_fmt, base, hist_fmt]
         out = sh_tmux_batch(cmds)[:-1].split("\n")
         hist_a, rows, hist_b = out[0], out[1:-1], out[-1]
@@ -793,16 +839,19 @@ def tmux_capture_pane(pane):
             pane.frozen = True
             pane.copy_mode = True
         if hist_a == hist_b:
-            # Keep literal tabs: cursor-right steps through tmux's cell
-            # buffer one char at a time, so true_col must count against
-            # this same string.
-            return rows[: pane.height]
-    return rows[: pane.height]
-
-
-# Panes frozen by the current run — released by main() on every normal
-# exit path; __main__'s finally releases leftovers after exceptions.
-_live_panes: list = []
+            break
+    rows = rows[: pane.height]
+    if not pane.was_in_mode:
+        # cache the frozen frame for a later re-trigger on this pane.
+        # Keep literal tabs: cursor-right steps through tmux's cell
+        # buffer one char at a time, so true_col must count against
+        # this same string.
+        try:
+            with open(_frozen_frame_path(pane.pane_id), "w") as f:
+                f.write("\n".join(rows))
+        except OSError:
+            pass
+    return rows
 
 
 def release_frozen(panes, keep=None):
@@ -812,6 +861,12 @@ def release_frozen(panes, keep=None):
     for p in panes:
         if p.frozen and p is not keep and not p.was_in_mode:
             cmds.append(["send-keys", "-X", "-t", p.pane_id, "cancel"])
+            cmds.append(["set-option", "-p", "-t", p.pane_id,
+                         "-u", "@easymotion_frozen_hist"])
+            try:
+                os.unlink(_frozen_frame_path(p.pane_id))
+            except OSError:
+                pass
         p.frozen = False
     if keep is not None:
         keep.frozen = False

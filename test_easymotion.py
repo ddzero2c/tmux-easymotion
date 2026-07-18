@@ -2025,6 +2025,43 @@ def test_overlay_early_keys_not_leaked(tmux_server):
     assert after == before, "early keystroke leaked into the source pane"
 
 
+@requires_tmux
+def test_recapture_of_our_frozen_pane_uses_frozen_frame(tmux_server):
+    """Retrigger while a pane is still frozen from OUR previous jump: the
+    user is looking at the frozen frame, so the new capture must
+    reconstruct THAT frame — not the live grid that kept moving. We know
+    the freeze-time history size (stored as a pane option), so the live
+    grid can be captured at the right offset."""
+    tmux_server.send_keys(
+        "clear; echo OLD_A; echo OLD_B; echo OLD_C; "
+        "sleep 1.2; echo NEW_1; echo NEW_2; echo NEW_3; echo NEW_4",
+        "Enter",
+    )
+    time.sleep(0.4)
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        first = tmux_capture_pane(pane)  # freezes; frame has OLD_* only
+        assert any(ln == "OLD_B" for ln in first)
+        assert not any(ln.startswith("NEW_") for ln in first)
+        # jump leaves the pane frozen (this is the normal flow)
+        target = next(i for i, ln in enumerate(first) if ln == "OLD_B")
+        pane.lines = first
+        tmux_move_cursor(pane, target, 1)
+
+        time.sleep(1.5)  # NEW_* lands on the LIVE grid; frozen view unchanged
+
+        # retrigger: fresh process = fresh pane info + capture
+        pane2 = easymotion.get_initial_tmux_info()[0]
+        second = tmux_capture_pane(pane2)
+    assert any(ln == "OLD_B" for ln in second), (
+        "recapture lost the frozen frame the user is looking at"
+    )
+    assert not any(ln.startswith("NEW_") for ln in second), (
+        f"recapture shows LIVE content, not the frozen frame: {second!r}"
+    )
+
+
 # =============================================================================
 # Integration Tests - get_tmux_option and Config
 # =============================================================================
