@@ -845,12 +845,12 @@ def tmux_move_cursor(pane, line_num, true_col):
     NAV_TRACE.append(f"first shot: {cmds}")
     sh_tmux_batch(cmds)
 
-    # Closed loop: verify the landing against measured state and repair,
-    # up to two rounds. ``k`` is any view shift the normalization caused
-    # (top row was a wrap continuation): the target content then sits at
-    # line_num + k in the shifted view, and scroll-down k afterwards
-    # restores the user's original view with the cursor still on target.
-    for _ in range(2):
+    # Closed loop: verify the landing against measured state and repair.
+    # Each round fixes ONE thing (scroll restore, then row, then column)
+    # and re-measures — never start-of-line here: on a wrap-continuation
+    # target row it walks to the logical line start and re-triggers the
+    # very shift being repaired (reproduced on CI).
+    for _ in range(4):
         out = sh(
             ["tmux", "display-message", "-p", "-t", pid,
              "#{copy_cursor_y},#{copy_cursor_x},#{scroll_position}"]
@@ -860,26 +860,25 @@ def tmux_move_cursor(pane, line_num, true_col):
         k = scroll_now - pane.scroll_position
         dy = line_num + k - y_now
         dx = expected_cell - x_now
-        if dy == 0 and dx == 0 and k == 0:
-            break
         cmds = []
-        if dy > 0:
+        if k > 0:
+            # restore the user's view first; later rounds then work in
+            # original view coordinates
+            x("-N", str(k), "scroll-down")
+        elif k < 0:
+            x("-N", str(-k), "scroll-up")
+        elif dy > 0:
             x("-N", str(dy), "cursor-down")
         elif dy < 0:
             x("-N", str(-dy), "cursor-up")
-        if dy != 0:
-            # row changed: rebase the column from the row start
-            x("start-of-line")
-            if steps > 0:
-                x("-N", str(steps), "cursor-right")
         elif dx > 0:
+            # cell-count approximation of steps; wide chars make this an
+            # overestimate that the next round shrinks
             x("-N", str(dx), "cursor-right")
         elif dx < 0:
             x("-N", str(-dx), "cursor-left")
-        if k > 0:
-            # restore the original view; the cursor (now at line_num + k)
-            # stays on its content, ending at view row line_num
-            x("-N", str(k), "scroll-down")
+        else:
+            break
         NAV_TRACE.append(f"correction: {cmds}")
         sh_tmux_batch(cmds)
 
