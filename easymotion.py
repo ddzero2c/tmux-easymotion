@@ -703,7 +703,7 @@ class PaneInfo:
         self.zoomed = False
         self.was_in_mode = False
         self.frozen = False
-        self.frozen_hist = None
+        self.frozen_hist: Optional[int] = None
 
 
 def get_terminal_size():
