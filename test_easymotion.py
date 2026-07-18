@@ -1306,6 +1306,19 @@ def assert_cursor_on_content(server, pane_id, expected_text, expected_col=None):
         assert x == expected_col, f"cursor col {x}, expected {expected_col}"
 
 
+def test_frozen_frame_path_is_server_scoped(monkeypatch):
+    """Two tmux servers both have a pane %0 — their frozen-frame caches
+    must not collide (isolated test servers would otherwise clobber the
+    user's real cache)."""
+    from easymotion import _frozen_frame_path
+
+    monkeypatch.setenv("TMUX", "/tmp/tmux-501/default,123,0")
+    a = _frozen_frame_path("%0")
+    monkeypatch.setenv("TMUX", "/tmp/tmux-501/pytest_abc,456,0")
+    b = _frozen_frame_path("%0")
+    assert a != b, "cache path must be scoped to the tmux server"
+
+
 def read_frozen_view_top(server):
     """What the user sees at the top of a frozen copy-mode view (read
     through the cursor; capture-pane cannot see frozen views)."""

@@ -782,11 +782,17 @@ def _capture_scrollback(pane_id: str, offset: int, height: int) -> list:
 
 
 def _frozen_frame_path(pane_id: str) -> str:
+    """Per-pane frozen-frame cache path, scoped to the tmux SERVER: pane
+    ids restart at %0 on every server, so an unscoped path would let one
+    server's cache (e.g. an isolated test server) clobber another's."""
+    import hashlib
     import tempfile
 
+    socket = os.environ.get("TMUX", "").split(",")[0] or "default"
+    scope = hashlib.sha1(socket.encode()).hexdigest()[:8]
     return os.path.join(
         tempfile.gettempdir(),
-        f"tmux_easymotion_{os.getuid()}_frame_{pane_id.lstrip('%')}",
+        f"tmux_easymotion_{os.getuid()}_{scope}_frame_{pane_id.lstrip('%')}",
     )
 
 
