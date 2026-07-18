@@ -766,6 +766,7 @@ def tmux_capture_pane(pane):
         base.extend(["-S", str(-pane.scroll_position), "-E", str(end_pos)])
 
     hist_fmt = ["display-message", "-p", "-t", pane.pane_id, "#{history_size}"]
+    rows: list = []
     for _ in range(3):
         cmds = []
         if not pane.frozen and not pane.copy_mode:

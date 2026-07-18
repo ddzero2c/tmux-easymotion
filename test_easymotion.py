@@ -1,3 +1,4 @@
+import os
 import subprocess
 import time
 import uuid
@@ -1823,6 +1824,184 @@ def test_jump_follows_streamed_content(tmux_server):
         capture_output=True, text=True).stdout.strip()
     assert in_mode == "1", "jump was cancelled; frozen coordinates should hold"
     assert_frozen_cursor_on_content(tmux_server, pane_id, "BASE_7", 2)
+
+
+# =============================================================================
+# Overlay-interaction locks (search character typed INSIDE the overlay).
+# Target flow: binding opens the overlay focused (no -d) -> panes freeze &
+# the frozen frame draws -> the search char and hint keys are read from the
+# overlay's own stdin. Early keystrokes buffer in the overlay pty, so
+# nothing leaks into the user's shell and the freeze covers the entire
+# target-selection window.
+# =============================================================================
+
+EASYMOTION_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "easymotion.py")
+
+
+def _wait_for(cond, timeout=5.0, interval=0.05):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if cond():
+            return True
+        time.sleep(interval)
+    return False
+
+
+class OverlayHarness:
+    """Drive a real easymotion overlay end-to-end on an isolated server."""
+
+    def __init__(self, server):
+        self.server = server
+
+    def tmx(self, *args):
+        return subprocess.run(
+            ["tmux", "-L", self.server.server_name, *args],
+            capture_output=True, text=True).stdout.strip()
+
+    def launch(self, mode="s"):
+        self.window_id = self.tmx(
+            "new-window", "-P", "-F", "#{window_id}",
+            f"python3 {EASYMOTION_PY} {mode}")
+        self.overlay_pane = self.tmx(
+            "list-panes", "-t", self.window_id, "-F", "#{pane_id}")
+        return self.window_id
+
+    def send(self, key):
+        self.tmx("send-keys", "-t", self.overlay_pane, "-l", key)
+
+    def alive(self):
+        return self.window_id in self.tmx("list-windows", "-F", "#{window_id}")
+
+    def wait_gone(self, timeout=5.0):
+        return _wait_for(lambda: not self.alive(), timeout)
+
+    def pane_in_mode(self, pane_id):
+        return self.tmx("display-message", "-p", "-t", pane_id,
+                        "#{pane_in_mode}") == "1"
+
+
+@requires_tmux
+@pytest.mark.xfail(
+    strict=True,
+    reason="overlay-input not implemented: the search char still comes "
+    "from argv via command-prompt, after the un-frozen decision window",
+)
+def test_overlay_freezes_before_char_input(tmux_server):
+    """N1: opening the overlay freezes the panes BEFORE any search
+    character is typed — the whole target-picking window views one frame."""
+    pane_id = tmux_server.pane_id
+    tmux_server.send_keys(
+        "i=0; while true; do i=$((i+1)); echo STREAM_$i; sleep 0.3; done",
+        "Enter")
+    time.sleep(1)
+    h = OverlayHarness(tmux_server)
+    h.launch("s")
+    assert _wait_for(lambda: h.pane_in_mode(pane_id), 3.0), (
+        "source pane should be frozen (copy-mode) before any char is typed"
+    )
+    h.send("q")  # no match for 'q'? STREAM has none -> overlay exits
+    h.wait_gone()
+
+
+@requires_tmux
+@pytest.mark.xfail(strict=True, reason="overlay-input not implemented")
+def test_overlay_char_then_hint_jump(tmux_server):
+    """N2: full flow — open overlay, type the search char, single match
+    jumps directly onto the frozen target."""
+    pane_id = tmux_server.pane_id
+    tmux_server.send_keys("clear; echo alpha; echo bravo_Zed; echo charlie",
+                          "Enter")
+    time.sleep(0.4)
+    h = OverlayHarness(tmux_server)
+    h.launch("s")
+    assert _wait_for(lambda: h.pane_in_mode(pane_id), 3.0)
+    h.send("Z")  # unique match in bravo_Zed
+    assert h.wait_gone(), "overlay should close after the jump"
+    assert h.pane_in_mode(pane_id)
+    assert_frozen_cursor_on_content(tmux_server, pane_id, "bravo_Zed", 6)
+
+
+@requires_tmux
+@pytest.mark.xfail(strict=True, reason="overlay-input not implemented")
+def test_overlay_s2_double_char(tmux_server):
+    """N3: s2 reads two chars from the overlay stdin — no command-prompt
+    round-trips, no server-global temp option."""
+    pane_id = tmux_server.pane_id
+    tmux_server.send_keys("clear; echo alpha; echo bravo_Zx1; echo charlie",
+                          "Enter")
+    time.sleep(0.4)
+    h = OverlayHarness(tmux_server)
+    h.launch("s2")
+    assert _wait_for(lambda: h.pane_in_mode(pane_id), 3.0)
+    h.send("Z")
+    h.send("x")
+    assert h.wait_gone(), "overlay should close after the jump"
+    assert_frozen_cursor_on_content(tmux_server, pane_id, "bravo_Zx1", 6)
+    # the legacy temp option must not exist anywhere
+    opt = subprocess.run(
+        ["tmux", "-L", tmux_server.server_name, "show-options", "-g"],
+        capture_output=True, text=True).stdout
+    assert "_easymotion_tmp" not in opt
+
+
+@requires_tmux
+@pytest.mark.xfail(strict=True, reason="overlay-input not implemented")
+def test_overlay_cancel_releases(tmux_server):
+    """N4: cancelling at the search prompt (Ctrl-C) closes the overlay
+    and releases every pane we froze."""
+    pane_id = tmux_server.pane_id
+    tmux_server.send_keys("clear; echo CONTENT", "Enter")
+    time.sleep(0.3)
+    h = OverlayHarness(tmux_server)
+    h.launch("s")
+    assert _wait_for(lambda: h.pane_in_mode(pane_id), 3.0)
+    h.tmx("send-keys", "-t", h.overlay_pane, "C-c")
+    assert h.wait_gone(), "overlay should exit on Ctrl-C"
+    assert _wait_for(lambda: not h.pane_in_mode(pane_id), 3.0), (
+        "frozen pane must be released on cancel"
+    )
+
+
+@requires_tmux
+@pytest.mark.xfail(strict=True, reason="overlay-input not implemented")
+def test_overlay_no_match_releases(tmux_server):
+    """N5: a search char with no matches closes the overlay and releases
+    frozen panes."""
+    pane_id = tmux_server.pane_id
+    tmux_server.send_keys("clear; echo aaaa", "Enter")
+    time.sleep(0.3)
+    h = OverlayHarness(tmux_server)
+    h.launch("s")
+    assert _wait_for(lambda: h.pane_in_mode(pane_id), 3.0)
+    h.send("z")
+    assert h.wait_gone()
+    assert _wait_for(lambda: not h.pane_in_mode(pane_id), 3.0)
+
+
+@requires_tmux
+@pytest.mark.xfail(strict=True, reason="overlay-input not implemented")
+def test_overlay_early_keys_not_leaked(tmux_server):
+    """N6: keys typed immediately after the binding (before the frame is
+    drawn) buffer in the focused overlay pty — consumed in order, never
+    leaked into the user's shell."""
+    pane_id = tmux_server.pane_id
+    tmux_server.send_keys("clear; echo alpha; echo bravo_Zed; echo charlie",
+                          "Enter")
+    time.sleep(0.4)
+    before = subprocess.run(
+        ["tmux", "-L", tmux_server.server_name, "capture-pane", "-p",
+         "-t", pane_id], capture_output=True, text=True).stdout
+    h = OverlayHarness(tmux_server)
+    h.launch("s")
+    h.send("Z")  # immediately — overlay almost certainly not drawn yet
+    assert h.wait_gone(), "early key should drive the jump"
+    assert h.pane_in_mode(pane_id)
+    assert_frozen_cursor_on_content(tmux_server, pane_id, "bravo_Zed", 6)
+    after = subprocess.run(
+        ["tmux", "-L", tmux_server.server_name, "capture-pane", "-p",
+         "-t", pane_id], capture_output=True, text=True).stdout
+    assert after == before, "early keystroke leaked into the source pane"
 
 
 # =============================================================================
