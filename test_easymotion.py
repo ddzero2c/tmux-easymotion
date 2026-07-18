@@ -1864,7 +1864,7 @@ class OverlayHarness:
         src = self.tmx("display-message", "-p", "-t",
                        self.server.pane_id, "#{window_id}")
         self.window_id = self.tmx(
-            "new-window", "-P", "-F", "#{window_id}",
+            "new-window", "-d", "-P", "-F", "#{window_id}",
             f"python3 {EASYMOTION_PY} {mode} --source {src}")
         self.overlay_pane = self.tmx(
             "list-panes", "-t", self.window_id, "-F", "#{pane_id}")

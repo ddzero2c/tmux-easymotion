@@ -1285,7 +1285,12 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
         startup.terminal_size or get_terminal_size()
     )
     if argv_chars is None:
-        # overlay-input mode: show the frozen frame before reading chars
+        # overlay-input mode: the window was created DETACHED — draw the
+        # frozen frame in the background and only then switch the client
+        # to it, so the user never sees a partially drawn overlay. Keys
+        # pressed before the switch land in the frozen source pane's
+        # copy-mode (harmless; worst case they cancel the freeze and the
+        # jump guard aborts cleanly) — never in the user's shell.
         draw_all_panes(
             panes,
             max_x,
@@ -1295,6 +1300,8 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
             config.horizontal_border,
         )
         screen.refresh()
+        overlay_window_id = startup.window_id or get_current_window_id()
+        sh(["tmux", "select-window", "-t", overlay_window_id])
 
     logging.debug("awaiting search chars (stdin raw=%s tty=%s)"
                   % (argv_chars is None, sys.stdin.isatty()))
