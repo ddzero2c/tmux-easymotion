@@ -772,6 +772,15 @@ def getch(input_str=None, num_chars=1):
     return ch
 
 
+def _capture_scrollback(pane_id: str, offset: int, height: int) -> list:
+    """Capture ``height`` rows ending ``offset`` rows above the live
+    bottom (offset 0 = the visible screen)."""
+    cmd = ["capture-pane", "-p", "-t", pane_id]
+    if offset > 0:
+        cmd.extend(["-S", str(-offset), "-E", str(-(offset - height + 1))])
+    return sh(["tmux", *cmd])[:-1].split("\n")
+
+
 def _frozen_frame_path(pane_id: str) -> str:
     import tempfile
 
@@ -790,9 +799,8 @@ def _read_frozen_row(pane_id: str, position_cmd: str) -> str:
         "begin-selection", "end-of-line", "copy-selection-no-clear",
     )]
     sh_tmux_batch(cmds)
-    text = sh(["tmux", "show-buffer"]).rstrip("\n")
-    sh(["tmux", "delete-buffer"])
-    return text
+    # buffer cleanup is folded into the caller's next batch
+    return sh(["tmux", "show-buffer"]).rstrip("\n")
 
 
 def _reconstruct_user_frozen_frame(pane):
@@ -805,8 +813,9 @@ def _reconstruct_user_frozen_frame(pane):
     pid = pane.pane_id
     top = _read_frozen_row(pid, "top-line")
     bottom = _read_frozen_row(pid, "bottom-line")
-    # best-effort cursor restore (reading moved it)
-    restore = [["send-keys", "-X", "-t", pid, "top-line"]]
+    # best-effort cursor restore (reading moved it) + paste-stack cleanup
+    restore = [["delete-buffer"], ["delete-buffer"],
+               ["send-keys", "-X", "-t", pid, "top-line"]]
     if pane.cursor_y:
         restore.append(
             ["send-keys", "-X", "-t", pid, "-N", str(pane.cursor_y), "cursor-down"]
@@ -820,7 +829,7 @@ def _reconstruct_user_frozen_frame(pane):
 
     if not top.strip() and not bottom.strip():
         return None
-    depth = pane.scroll_position + pane.height + 8000
+    depth = pane.scroll_position + pane.height + min(8000, pane.history_size)
     window = sh(
         ["tmux", "capture-pane", "-p", "-t", pid,
          "-S", str(-depth), "-E", str(pane.height - 1)]
@@ -888,12 +897,9 @@ def tmux_capture_pane(pane):
             if s1 == 0:
                 return cache[: pane.height]
             delta = max(0, pane.history_size - pane.frozen_hist)
-            offset = delta + s1
-            end_pos = -(offset - pane.height + 1)
-            hist_rows = sh(
-                ["tmux", "capture-pane", "-p", "-t", pane.pane_id,
-                 "-S", str(-offset), "-E", str(end_pos)]
-            )[:-1].split("\n")
+            hist_rows = _capture_scrollback(
+                pane.pane_id, delta + s1, pane.height
+            )
             frame = [
                 hist_rows[i] if i < len(hist_rows) else ""
                 for i in range(pane.height)
@@ -1037,7 +1043,6 @@ def tmux_move_cursor(pane, line_num, true_col):
         x("goto-line", str(pane.scroll_position))
         if pane.height - 1 > line_num:
             x("-N", str(pane.height - 1 - line_num), "cursor-up")
-        first_shot_right = False
     else:
         # Unscrolled pane: top-line is exact (row 0). start-of-line may
         # still walk above the view when row 0 continues a wrapped line
@@ -1056,24 +1061,26 @@ def tmux_move_cursor(pane, line_num, true_col):
             rows_remaining -= first_non_empty
         if rows_remaining > 0:
             x("-N", str(rows_remaining), "cursor-down")
-        first_shot_right = True
-    if first_shot_right and steps > 0:
-        x("-N", str(steps), "cursor-right")
+        if steps > 0:
+            x("-N", str(steps), "cursor-right")
+    # the position read rides in the same batch (display-message output
+    # is the batch's only stdout line)
+    cmds.append(
+        ["display-message", "-p", "-t", pid,
+         "#{copy_cursor_y},#{copy_cursor_x},#{scroll_position}"]
+    )
     NAV_TRACE.append(f"first shot: {cmds}")
-    sh_tmux_batch(cmds)
+    state = sh_tmux_batch(cmds).strip().split("\n")[-1]
 
     # Closed loop: verify the landing against measured state and repair.
     # Each round fixes ONE thing (scroll restore, then row, then column)
-    # and re-measures — never start-of-line here: on a wrap-continuation
-    # target row it walks to the logical line start and re-triggers the
-    # very shift being repaired (reproduced on CI).
+    # and re-measures via a read appended to the correction batch itself
+    # — never start-of-line here: on a wrap-continuation target row it
+    # walks to the logical line start and re-triggers the very shift
+    # being repaired (reproduced on CI).
     for _ in range(6):
-        out = sh(
-            ["tmux", "display-message", "-p", "-t", pid,
-             "#{copy_cursor_y},#{copy_cursor_x},#{scroll_position}"]
-        ).strip()
-        y_now, x_now, scroll_now = (int(v or 0) for v in out.split(","))
-        NAV_TRACE.append(f"verify read: {out!r}")
+        y_now, x_now, scroll_now = (int(v or 0) for v in state.split(","))
+        NAV_TRACE.append(f"verify read: {state!r}")
         k = scroll_now - pane.scroll_position
         dy = line_num + k - y_now
         dx = expected_cell - x_now
@@ -1103,8 +1110,12 @@ def tmux_move_cursor(pane, line_num, true_col):
                 break  # cell mismatch but same step position (edge cell)
         else:
             break
+        cmds.append(
+            ["display-message", "-p", "-t", pid,
+             "#{copy_cursor_y},#{copy_cursor_x},#{scroll_position}"]
+        )
         NAV_TRACE.append(f"correction: {cmds}")
-        sh_tmux_batch(cmds)
+        state = sh_tmux_batch(cmds).strip().split("\n")[-1]
 
 
 def assign_hints_by_distance(
@@ -1426,44 +1437,36 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
     global _live_panes
     _live_panes = panes
 
-    # Motion type and (optionally) the search chars from argv. Without
-    # argv chars the overlay reads them from its OWN stdin: the binding
-    # opens this window focused, panes are already frozen above, so the
-    # user picks the target on a stable frame and early keystrokes just
-    # buffer in our pty.
+    # Motion type from argv; the search chars are read from the
+    # overlay's own stdin (the binding opens this window via new-window
+    # -d; panes are frozen above, the frame below draws before reading).
     motion_type = sys.argv[1] if len(sys.argv) > 1 else "s"
     if motion_type not in ("s", "s2"):
         logging.error(f"Invalid motion type: {motion_type}")
         release_frozen(panes)
         exit(1)
     num_chars = 2 if motion_type == "s2" else 1
-    argv_chars = sys.argv[2] if len(sys.argv) > 2 else None
 
     terminal_width, terminal_height = (
         startup.terminal_size or get_terminal_size()
     )
-    if argv_chars is None:
-        # overlay-input mode: the window was created DETACHED — draw the
-        # frozen frame in the background and only then switch the client
-        # to it, so the user never sees a partially drawn overlay. Keys
-        # pressed before the switch land in the frozen source pane's
-        # copy-mode (harmless; worst case they cancel the freeze and the
-        # jump guard aborts cleanly) — never in the user's shell.
-        draw_all_panes(
-            panes,
-            max_x,
-            terminal_height,
-            screen,
-            config.vertical_border,
-            config.horizontal_border,
-        )
-        screen.refresh()
-        overlay_window_id = startup.window_id or get_current_window_id()
-        sh(["tmux", "select-window", "-t", overlay_window_id])
+    # show the frozen frame, then switch the client to the (detached)
+    # overlay window only when it is fully drawn — no flicker; keys
+    # pressed meanwhile hit the frozen source panes' copy-mode, never
+    # the shell
+    draw_all_panes(
+        panes,
+        max_x,
+        terminal_height,
+        screen,
+        config.vertical_border,
+        config.horizontal_border,
+    )
+    screen.refresh()
+    overlay_window_id = startup.window_id or get_current_window_id()
+    sh(["tmux", "select-window", "-t", overlay_window_id])
 
-    logging.debug("awaiting search chars (stdin raw=%s tty=%s)"
-                  % (argv_chars is None, sys.stdin.isatty()))
-    raw = getch(argv_chars, num_chars)
+    raw = getch(None, num_chars)
     logging.debug(f"Raw input ({motion_type}): {repr(raw)}")
     search_pattern = raw.replace("\n", "").replace("\r", "")
     if len(search_pattern) < num_chars:
@@ -1520,19 +1523,6 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
                     )
                 )
 
-    if argv_chars is not None:
-        # legacy argv mode (command-prompt bindings): the frame wasn't
-        # drawn yet and the overlay window was created detached
-        draw_all_panes(
-            panes,
-            max_x,
-            terminal_height,
-            screen,
-            config.vertical_border,
-            config.horizontal_border,
-        )
-        overlay_window_id = startup.window_id or get_current_window_id()
-        sh(["tmux", "select-window", "-t", overlay_window_id])
     draw_all_hints(positions, terminal_height, screen)
 
     # Handle user input
@@ -1568,19 +1558,17 @@ if __name__ == "__main__":
         i = sys.argv.index("--source")
         _source_window = sys.argv[i + 1]
         del sys.argv[i : i + 2]
-    _overlay_input = len(sys.argv) <= 2
+
     # Switch stdin to raw immediately so keys typed right after the
     # binding (before the frame is drawn) land in the input queue for
     # getch instead of being absorbed by the canonical line editor. Keys
     # in the first ~25ms (interpreter startup) can still be lost — below
     # any human keypress interval.
     _saved_termios = None
-    if _overlay_input and sys.stdin.isatty():
+    if sys.stdin.isatty():
         _saved_termios = termios.tcgetattr(sys.stdin.fileno())
         tty.setraw(sys.stdin.fileno())
-    startup = get_startup_info(
-        _source_window or ("!" if _overlay_input else None)
-    )
+    startup = get_startup_info(_source_window or "!")
     config = Config.from_tmux()
     screen: Screen = Curses(config) if config.use_curses else AnsiSequence(config)
     try:

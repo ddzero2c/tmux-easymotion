@@ -1002,6 +1002,13 @@ class TmuxTestServer:
             text=True,
         ).stdout.strip()
 
+    def tmx(self, *args):
+        """Run a tmux command against this test server, return stdout."""
+        return subprocess.run(
+            ["tmux", "-L", self.server_name, *args],
+            capture_output=True, text=True,
+        ).stdout.strip()
+
     def stop(self):
         """Kill the tmux server."""
         subprocess.run(
@@ -1299,6 +1306,15 @@ def assert_cursor_on_content(server, pane_id, expected_text, expected_col=None):
         assert x == expected_col, f"cursor col {x}, expected {expected_col}"
 
 
+def read_frozen_view_top(server):
+    """What the user sees at the top of a frozen copy-mode view (read
+    through the cursor; capture-pane cannot see frozen views)."""
+    for c in ("clear-selection", "top-line", "start-of-line",
+              "begin-selection", "end-of-line", "copy-selection-no-clear"):
+        server.tmx("send-keys", "-X", "-t", server.pane_id, c)
+    return server.tmx("show-buffer")
+
+
 def assert_frozen_cursor_on_content(server, pane_id, expected_text, expected_col):
     """Frozen-frame variant: capture-pane reads the LIVE grid and cannot
     see a frozen copy-mode view, so read the content under the cursor
@@ -1528,12 +1544,8 @@ def test_copy_mode_movement_semantics(tmux_server):
     (a) -N k cursor-down moves k SCREEN rows, even across wrapped lines;
     (b) -N big cursor-right does NOT clamp at end of line — it wraps to
         following lines (so column overshoot becomes a wrong-line jump)."""
-    sn = tmux_server.server_name
 
-    def tmx(*args):
-        return subprocess.run(
-            ["tmux", "-L", sn, *args], capture_output=True, text=True
-        ).stdout.strip()
+    tmx = tmux_server.tmx
 
     tmux_server.send_keys(
         "clear; printf 'AAA\\n'; printf 'B%.0s' {1..70}; "
@@ -1632,12 +1644,8 @@ def test_copy_mode_freezes_view(tmux_server):
     """Semantics lock: after entering copy-mode, new pane output must NOT
     move the frozen view — cursor movement keeps operating on the frozen
     content (verified on tmux 3.4 and 3.6a; guards against version drift)."""
-    sn = tmux_server.server_name
 
-    def tmx(*args):
-        return subprocess.run(
-            ["tmux", "-L", sn, *args], capture_output=True, text=True
-        ).stdout.strip()
+    tmx = tmux_server.tmx
 
     tmux_server.send_keys(
         "clear; for i in 1 2 3 4 5 6 7 8; do echo N_$i; done; "
@@ -1750,8 +1758,7 @@ def test_jump_reaches_content_scrolled_out_during_selection(tmux_server):
 def test_inplace_rewrite_jump_succeeds(tmux_server):
     """Freeze-first target behavior: a TUI rewriting its screen in place
     must not prevent the jump — the frozen frame is what the user saw and
-    aimed at. (Supersedes test_jump_cancelled_on_inplace_rewrite, which
-    locks the current cancel behavior and is removed when this flips.)"""
+    aimed at."""
     pane_id = tmux_server.pane_id
     tmux_server.send_keys(
         "clear; echo ROW_A; echo ROW_B; echo ROW_C; "
@@ -1857,9 +1864,7 @@ class OverlayHarness:
         self.server = server
 
     def tmx(self, *args):
-        return subprocess.run(
-            ["tmux", "-L", self.server.server_name, *args],
-            capture_output=True, text=True).stdout.strip()
+        return self.server.tmx(*args)
 
     def launch(self, mode="s"):
         self.tmx("set-option", "-g", "@easymotion-debug", "true")
@@ -2092,16 +2097,7 @@ def test_capture_of_user_scrolled_pane_matches_their_view(tmux_server):
                    check=True)
     subprocess.run(["tmux", "-L", sn, "send-keys", "-X", "-t",
                     tmux_server.pane_id, "-N", "5", "scroll-up"], check=True)
-    # note what the user sees at the top of their frozen view
-    def read_view_top():
-        for cmd in (["clear-selection"], ["top-line"], ["start-of-line"],
-                    ["begin-selection"], ["end-of-line"],
-                    ["copy-selection-no-clear"]):
-            subprocess.run(["tmux", "-L", sn, "send-keys", "-X", "-t",
-                            tmux_server.pane_id, *cmd], check=True)
-        return subprocess.run(["tmux", "-L", sn, "show-buffer"],
-                              capture_output=True, text=True).stdout.strip()
-    seen_top = read_view_top()
+    seen_top = read_frozen_view_top(tmux_server)
     time.sleep(1.5)  # N_31..N_40 stream in while they look at old content
 
     with patch("easymotion.sh", tmux_server.make_sh_for_server()):
@@ -2137,16 +2133,7 @@ def test_recapture_after_user_scrolls_within_our_freeze(tmux_server):
         # the user scrolls up 8 rows inside the frozen snapshot
         subprocess.run(["tmux", "-L", sn, "send-keys", "-X", "-t",
                         pane.pane_id, "-N", "8", "scroll-up"], check=True)
-        # what they now see at the top of their view:
-        def read_top():
-            for c in ("clear-selection", "top-line", "start-of-line",
-                      "begin-selection", "end-of-line",
-                      "copy-selection-no-clear"):
-                subprocess.run(["tmux", "-L", sn, "send-keys", "-X", "-t",
-                                pane.pane_id, c], check=True)
-            return subprocess.run(["tmux", "-L", sn, "show-buffer"],
-                                  capture_output=True, text=True).stdout.strip()
-        seen_top = read_top()
+        seen_top = read_frozen_view_top(tmux_server)
         time.sleep(1.8)  # N_31.. streams into the LIVE grid meanwhile
 
         pane2 = easymotion.get_initial_tmux_info()[0]
