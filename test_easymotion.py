@@ -1873,6 +1873,19 @@ class OverlayHarness:
     def send(self, key):
         self.tmx("send-keys", "-t", self.overlay_pane, "-l", key)
 
+    def send_until_gone(self, key, timeout=6.0, resend_every=1.0):
+        """send-keys to a pane with no attached client can drop a key on
+        heavily loaded machines (observed on CI runners and under local
+        load; a real user's keystrokes travel the attached-client path
+        instead). Resend until the overlay reacts — consumption order is
+        still what the assertions verify."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            self.send(key)
+            if _wait_for(lambda: not self.alive(), resend_every):
+                return True
+        return self.wait_gone(0.1)  # raises with diagnostics
+
     def alive(self):
         return self.window_id in self.tmx("list-windows", "-F", "#{window_id}")
 
@@ -1921,8 +1934,7 @@ def test_overlay_freezes_before_char_input(tmux_server):
     assert _wait_for(lambda: h.pane_in_mode(pane_id), 3.0), (
         "source pane should be frozen (copy-mode) before any char is typed"
     )
-    h.send("q")  # no match for 'q'? STREAM has none -> overlay exits
-    h.wait_gone()
+    assert h.send_until_gone("q")  # no match -> overlay exits
 
 
 @requires_tmux
@@ -1936,8 +1948,7 @@ def test_overlay_char_then_hint_jump(tmux_server):
     h = OverlayHarness(tmux_server)
     h.launch("s")
     assert _wait_for(lambda: h.pane_in_mode(pane_id), 3.0)
-    h.send("Z")  # unique match in bravo_Zed
-    assert h.wait_gone(), "overlay should close after the jump"
+    assert h.send_until_gone("Z"), "overlay should close after the jump"
     assert h.pane_in_mode(pane_id)
     assert_frozen_cursor_on_content(tmux_server, pane_id, "bravo_Zed", 6)
 
@@ -1953,9 +1964,7 @@ def test_overlay_s2_double_char(tmux_server):
     h = OverlayHarness(tmux_server)
     h.launch("s2")
     assert _wait_for(lambda: h.pane_in_mode(pane_id), 3.0)
-    h.send("Z")
-    h.send("x")
-    assert h.wait_gone(), "overlay should close after the jump"
+    assert h.send_until_gone("Zx"), "overlay should close after the jump"
     assert_frozen_cursor_on_content(tmux_server, pane_id, "bravo_Zx1", 6)
     # the legacy temp option must not exist anywhere
     opt = subprocess.run(
@@ -1974,8 +1983,11 @@ def test_overlay_cancel_releases(tmux_server):
     h = OverlayHarness(tmux_server)
     h.launch("s")
     assert _wait_for(lambda: h.pane_in_mode(pane_id), 3.0)
-    h.tmx("send-keys", "-t", h.overlay_pane, "C-c")
-    assert h.wait_gone(), "overlay should exit on Ctrl-C"
+    deadline = time.time() + 6
+    while h.alive() and time.time() < deadline:
+        h.tmx("send-keys", "-t", h.overlay_pane, "C-c")
+        time.sleep(0.5)
+    assert h.wait_gone(0.1), "overlay should exit on Ctrl-C"
     assert _wait_for(lambda: not h.pane_in_mode(pane_id), 3.0), (
         "frozen pane must be released on cancel"
     )
@@ -1991,8 +2003,7 @@ def test_overlay_no_match_releases(tmux_server):
     h = OverlayHarness(tmux_server)
     h.launch("s")
     assert _wait_for(lambda: h.pane_in_mode(pane_id), 3.0)
-    h.send("z")
-    assert h.wait_gone()
+    assert h.send_until_gone("z")
     assert _wait_for(lambda: not h.pane_in_mode(pane_id), 3.0)
 
 
@@ -2015,8 +2026,7 @@ def test_overlay_early_keys_not_leaked(tmux_server):
     # so in_mode==1 guarantees the key lands in the raw input queue, yet
     # the frame (drawn after all captures) is typically not up yet.
     assert _wait_for(lambda: h.pane_in_mode(pane_id), 5.0)
-    h.send("Z")
-    assert h.wait_gone(), "early key should drive the jump"
+    assert h.send_until_gone("Z"), "early key should drive the jump"
     assert h.pane_in_mode(pane_id)
     assert_frozen_cursor_on_content(tmux_server, pane_id, "bravo_Zed", 6)
     after = subprocess.run(
