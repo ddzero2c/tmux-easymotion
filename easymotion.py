@@ -781,6 +781,61 @@ def _frozen_frame_path(pane_id: str) -> str:
     )
 
 
+def _read_frozen_row(pane_id: str, position_cmd: str) -> str:
+    """Read one row's content out of a frozen copy-mode view via a
+    cursor selection (capture-pane cannot see frozen views). Cleans the
+    buffer it creates so the user's paste stack is left intact."""
+    cmds = [["send-keys", "-X", "-t", pane_id, c] for c in (
+        "clear-selection", position_cmd, "start-of-line",
+        "begin-selection", "end-of-line", "copy-selection-no-clear",
+    )]
+    sh_tmux_batch(cmds)
+    text = sh(["tmux", "show-buffer"]).rstrip("\n")
+    sh(["tmux", "delete-buffer"])
+    return text
+
+
+def _reconstruct_user_frozen_frame(pane):
+    """The user froze this pane themselves (their copy-mode) and content
+    kept streaming: their view is CONTENT-anchored while capture-pane
+    offsets are live-relative. Locate their view in the live grid by its
+    top and bottom row contents and return that frame; None when the
+    anchors are blank or ambiguous (callers fall back to a live-relative
+    capture — the documented limitation)."""
+    pid = pane.pane_id
+    top = _read_frozen_row(pid, "top-line")
+    bottom = _read_frozen_row(pid, "bottom-line")
+    # best-effort cursor restore (reading moved it)
+    restore = [["send-keys", "-X", "-t", pid, "top-line"]]
+    if pane.cursor_y:
+        restore.append(
+            ["send-keys", "-X", "-t", pid, "-N", str(pane.cursor_y), "cursor-down"]
+        )
+    restore.append(["send-keys", "-X", "-t", pid, "start-of-line"])
+    if pane.cursor_x:
+        restore.append(
+            ["send-keys", "-X", "-t", pid, "-N", str(pane.cursor_x), "cursor-right"]
+        )
+    sh_tmux_batch(restore)
+
+    if not top.strip() and not bottom.strip():
+        return None
+    depth = pane.scroll_position + pane.height + 8000
+    window = sh(
+        ["tmux", "capture-pane", "-p", "-t", pid,
+         "-S", str(-depth), "-E", str(pane.height - 1)]
+    )[:-1].split("\n")
+    h = pane.height
+    hits = [
+        k for k in range(0, max(0, len(window) - h + 1))
+        if window[k].rstrip() == top and window[k + h - 1].rstrip() == bottom
+    ]
+    if len(hits) != 1:
+        return None
+    k = hits[0]
+    return window[k : k + h]
+
+
 def tmux_capture_pane(pane):
     """Freeze the pane and capture its (now frozen) content.
 
@@ -804,6 +859,14 @@ def tmux_capture_pane(pane):
     """
     if not pane.height or not pane.width:
         return []
+
+    if pane.copy_mode and pane.frozen_hist is None and not pane.frozen:
+        # the USER froze this pane: reconstruct the view they see
+        frame = _reconstruct_user_frozen_frame(pane)
+        if frame is not None:
+            pane.frozen = True
+            pane.was_in_mode = True  # theirs: never cancel it
+            return frame[: pane.height]
 
     if pane.copy_mode and pane.frozen_hist is not None:
         # re-trigger on a pane WE froze: serve the cached frozen frame

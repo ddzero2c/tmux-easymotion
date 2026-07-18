@@ -2072,6 +2072,45 @@ def test_recapture_of_our_frozen_pane_uses_frozen_frame(tmux_server):
     )
 
 
+@requires_tmux
+def test_capture_of_user_scrolled_pane_matches_their_view(tmux_server):
+    """The user scrolled back themselves (their own copy-mode freeze) and
+    the pane kept streaming: their frozen view is CONTENT-anchored while
+    capture-pane offsets are live-relative — capturing at -scroll shows
+    far newer content than what they see. The capture must locate their
+    view by content anchors and return the frame they are looking at."""
+    tmux_server.send_keys(
+        "clear; for i in $(seq 1 30); do echo N_$i; done; "
+        "sleep 1.2; for i in $(seq 31 40); do echo N_$i; done",
+        "Enter",
+    )
+    time.sleep(0.4)
+    sn = tmux_server.server_name
+    subprocess.run(["tmux", "-L", sn, "copy-mode", "-t", tmux_server.pane_id],
+                   check=True)
+    subprocess.run(["tmux", "-L", sn, "send-keys", "-X", "-t",
+                    tmux_server.pane_id, "-N", "5", "scroll-up"], check=True)
+    # note what the user sees at the top of their frozen view
+    def read_view_top():
+        for cmd in (["clear-selection"], ["top-line"], ["start-of-line"],
+                    ["begin-selection"], ["end-of-line"],
+                    ["copy-selection-no-clear"]):
+            subprocess.run(["tmux", "-L", sn, "send-keys", "-X", "-t",
+                            tmux_server.pane_id, *cmd], check=True)
+        return subprocess.run(["tmux", "-L", sn, "show-buffer"],
+                              capture_output=True, text=True).stdout.strip()
+    seen_top = read_view_top()
+    time.sleep(1.5)  # N_31..N_40 stream in while they look at old content
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        frame = tmux_capture_pane(pane)
+    assert frame[0].strip() == seen_top, (
+        f"capture shows {frame[0].strip()!r} at the top; the user is "
+        f"looking at {seen_top!r}"
+    )
+
+
 # =============================================================================
 # Integration Tests - get_tmux_option and Config
 # =============================================================================
