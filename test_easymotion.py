@@ -1586,6 +1586,202 @@ def test_cursor_jump_combining_chars(tmux_server):
     )
 
 
+# =============================================================================
+# Freeze-first behavior locks (Phase 1: tests before the refactor).
+# Green tests lock current behavior the refactor must preserve; xfail(strict)
+# tests define the freeze-first target behavior (they flip when implemented).
+#
+# Probe results recorded 2026-07-18 (tmux 3.4 + 3.6a):
+# - copy-mode freezes the view/coordinates at entry (locked by
+#   test_copy_mode_freezes_view below).
+# - #{copy_cursor_line} exists in the man page but evaluates EMPTY on both
+#   versions — no absolute anchor for panes the USER froze before streaming
+#   output arrived; that stays a known limitation.
+# - naive delta-compensated capture (-S -delta) after freezing was off by
+#   one row in a quick probe — the freeze/capture race compensation must be
+#   locked by its own test during implementation, not assumed.
+# =============================================================================
+
+
+@requires_tmux
+def test_copy_mode_freezes_view(tmux_server):
+    """Semantics lock: after entering copy-mode, new pane output must NOT
+    move the frozen view — cursor movement keeps operating on the frozen
+    content (verified on tmux 3.4 and 3.6a; guards against version drift)."""
+    sn = tmux_server.server_name
+
+    def tmx(*args):
+        return subprocess.run(
+            ["tmux", "-L", sn, *args], capture_output=True, text=True
+        ).stdout.strip()
+
+    tmux_server.send_keys(
+        "clear; for i in 1 2 3 4 5 6 7 8; do echo N_$i; done; "
+        "sleep 1.2; echo NEW_1; echo NEW_2; echo NEW_3",
+        "Enter",
+    )
+    time.sleep(0.4)
+    tmx("copy-mode")
+    tmx("send-keys", "-X", "top-line")
+    tmx("send-keys", "-X", "start-of-line")
+    tmx("send-keys", "-X", "-N", "3", "cursor-down")
+    time.sleep(1.5)  # NEW lines arrive while frozen
+    # cursor-down still moves in FROZEN coordinates: two rows below the
+    # frozen row-3 content, regardless of the live grid having new rows
+    tmx("send-keys", "-X", "-N", "2", "cursor-down")
+    tmx("send-keys", "-X", "begin-selection")
+    tmx("send-keys", "-X", "end-of-line")
+    tmx("send-keys", "-X", "copy-selection-no-clear")
+    line = tmx("show-buffer")
+    tmx("send-keys", "-X", "cancel")
+    # frozen rows: 0='' (clear) or prompt-dependent — assert relative
+    # movement stayed within the N_* block captured at freeze
+    assert line.startswith("N_"), (
+        f"cursor left the frozen frame: {line!r} — copy-mode no longer "
+        f"freezes coordinates on this tmux version"
+    )
+
+
+@requires_tmux
+def test_capture_leaves_pane_mode_untouched(tmux_server):
+    """Lock: capturing panes must not leave copy-mode enabled on panes
+    that weren't in copy-mode (the freeze-first refactor must restore
+    state on abort to keep this green)."""
+    pane_id = tmux_server.pane_id
+    tmux_server.send_keys("clear; echo CONTENT", "Enter")
+    time.sleep(0.3)
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        pane.lines = tmux_capture_pane(pane)
+        # simulate overlay abort: no jump happens
+    in_mode = subprocess.run(
+        ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
+         "-t", pane_id, "#{pane_in_mode}"],
+        capture_output=True, text=True).stdout.strip()
+    assert in_mode == "0"
+
+
+@requires_tmux
+def test_jump_preserves_user_scroll(tmux_server):
+    """Lock: jumping within a pane the USER scrolled must leave the pane
+    at that scroll position — their view of history is not lost."""
+    pane_id = tmux_server.pane_id
+    tmux_server.send_keys("clear; for i in $(seq 1 30); do echo S_$i; done",
+                          "Enter")
+    time.sleep(0.4)
+    subprocess.run(["tmux", "-L", tmux_server.server_name, "copy-mode",
+                    "-t", pane_id], check=True)
+    subprocess.run(["tmux", "-L", tmux_server.server_name, "send-keys",
+                    "-X", "-t", pane_id, "-N", "12", "scroll-up"], check=True)
+    time.sleep(0.2)
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        assert pane.scroll_position == 12
+        pane.lines = tmux_capture_pane(pane)
+        target_line = next(
+            i for i, ln in enumerate(pane.lines) if ln.startswith("S_")
+        )
+        tmux_move_cursor(pane, target_line, 1)
+    time.sleep(0.1)
+    scroll = subprocess.run(
+        ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
+         "-t", pane_id, "#{scroll_position}"],
+        capture_output=True, text=True).stdout.strip()
+    assert scroll == "12", f"user's scroll lost: now {scroll}"
+
+
+@requires_tmux
+@pytest.mark.xfail(
+    strict=True,
+    reason="freeze-first not implemented: target scrolled out of the live "
+    "view is only reachable once panes are frozen at capture time",
+)
+def test_jump_reaches_content_scrolled_out_during_selection(tmux_server):
+    """Freeze-first target behavior: if streamed output pushes the aimed
+    row out of the live view while the user is picking a hint, the jump
+    must still land on it — the frozen frame keeps it reachable. (Current
+    architecture must cancel here: retargeting can't reach off-view rows.)
+    """
+    pane_id = tmux_server.pane_id
+    tmux_server.send_keys(
+        "clear; echo TOP_TARGET; for i in 1 2 3 4 5 6 7 8; do echo PAD_$i; "
+        "done; sleep 1.2; for i in 1 2 3 4 5; do echo DRIFT_$i; done",
+        "Enter",
+    )
+    time.sleep(0.4)
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        pane.lines = tmux_capture_pane(pane)
+        target_line = next(
+            i for i, ln in enumerate(pane.lines) if ln == "TOP_TARGET"
+        )
+        time.sleep(1.5)  # DRIFT pushes TOP_TARGET above the live view
+        tmux_move_cursor(pane, target_line, 2)
+    time.sleep(0.1)
+    in_mode = subprocess.run(
+        ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
+         "-t", pane_id, "#{pane_in_mode}"],
+        capture_output=True, text=True).stdout.strip()
+    assert in_mode == "1", "jump was cancelled; frozen frame should keep it reachable"
+    assert_cursor_on_content(tmux_server, pane_id, "TOP_TARGET", 2)
+
+
+@requires_tmux
+@pytest.mark.xfail(
+    strict=True,
+    reason="freeze-first not implemented: in-place rewrites currently "
+    "cancel; with frozen panes the jump lands on the frozen frame",
+)
+def test_inplace_rewrite_jump_succeeds(tmux_server):
+    """Freeze-first target behavior: a TUI rewriting its screen in place
+    must not prevent the jump — the frozen frame is what the user saw and
+    aimed at. (Supersedes test_jump_cancelled_on_inplace_rewrite, which
+    locks the current cancel behavior and is removed when this flips.)"""
+    pane_id = tmux_server.pane_id
+    tmux_server.send_keys(
+        "clear; echo ROW_A; echo ROW_B; echo ROW_C; "
+        "sleep 1.2; tput cuu 3; echo SHIFTED_X; echo ROW_A2",
+        "Enter",
+    )
+    time.sleep(0.4)
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        pane.lines = tmux_capture_pane(pane)
+        target_line = next(i for i, ln in enumerate(pane.lines) if ln == "ROW_B")
+        time.sleep(1.4)  # in-place rewrite happens
+        tmux_move_cursor(pane, target_line, 1)
+    time.sleep(0.1)
+    in_mode = subprocess.run(
+        ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
+         "-t", pane_id, "#{pane_in_mode}"],
+        capture_output=True, text=True).stdout.strip()
+    assert in_mode == "1", "jump cancelled; frozen frame should make it succeed"
+    assert_cursor_on_content(tmux_server, pane_id, "ROW_B", 1)
+
+
+@requires_tmux
+@pytest.mark.xfail(
+    strict=True,
+    reason="freeze-first not implemented: capture does not yet freeze panes",
+)
+def test_capture_freezes_pane(tmux_server):
+    """Freeze-first target behavior: capturing for the overlay puts the
+    pane into copy-mode (freezing its view for the whole hint-selection
+    window). Restoration on abort is locked separately by
+    test_capture_leaves_pane_mode_untouched once a release API exists."""
+    pane_id = tmux_server.pane_id
+    tmux_server.send_keys("clear; echo CONTENT", "Enter")
+    time.sleep(0.3)
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        pane.lines = tmux_capture_pane(pane)
+        in_mode = subprocess.run(
+            ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
+             "-t", pane_id, "#{pane_in_mode}"],
+            capture_output=True, text=True).stdout.strip()
+    assert in_mode == "1", "capture should freeze the pane in copy-mode"
+
+
 @requires_tmux
 def test_jump_follows_streamed_content(tmux_server):
     """A streaming pane (ping, tail -f) pushes rows into history between
