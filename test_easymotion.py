@@ -1179,7 +1179,7 @@ def test_cursor_jump_on_wrapped_line(tmux_server):
     assert cursor_x == target_col, (
         f"Cursor X position wrong: expected {target_col}, got {cursor_x}"
     )
-    assert_cursor_on_content(
+    assert_frozen_cursor_on_content(
         tmux_server, pane_id, pane.lines[target_line], target_col
     )
 
@@ -1270,7 +1270,7 @@ def test_cursor_jump_with_empty_top_rows():
         assert cursor_x == target_col, (
             f"Cursor at col {cursor_x}, expected {target_col}"
         )
-        assert_cursor_on_content(
+        assert_frozen_cursor_on_content(
             server, pane_id, pane.lines[target_line], target_col
         )
     finally:
@@ -1315,9 +1315,11 @@ def assert_frozen_cursor_on_content(server, pane_id, expected_text, expected_col
     tmx("send-keys", "-X", "-t", pane_id, "copy-selection-no-clear")
     got = tmx("show-buffer")
     want = expected_text[expected_col:].rstrip()
-    assert got.rstrip() == want, (
-        f"cursor-to-EOL is {got.rstrip()!r}, expected {want!r} "
-        f"(frozen frame mismatch)"
+    # end-of-line runs to the LOGICAL line end: on a wrapped row the
+    # selection continues into following screen rows, so compare prefix
+    assert got.rstrip().startswith(want), (
+        f"cursor-to-EOL is {got.rstrip()!r}, expected it to start with "
+        f"{want!r} (frozen frame mismatch)"
     )
 
 
@@ -1364,7 +1366,7 @@ def test_same_pane_jump(tmux_server):
     assert cursor_x == target_col, (
         f"Cursor X position wrong: expected {target_col}, got {cursor_x}"
     )
-    assert_cursor_on_content(
+    assert_frozen_cursor_on_content(
         tmux_server, pane_id, pane.lines[target_line], target_col
     )
 
@@ -1415,7 +1417,7 @@ def test_cross_pane_jump(tmux_server):
     assert cursor_x == target_col, (
         f"Cursor X position wrong: expected {target_col}, got {cursor_x}"
     )
-    assert_cursor_on_content(
+    assert_frozen_cursor_on_content(
         tmux_server, pane2_id, pane2.lines[target_line], target_col
     )
 
@@ -1481,7 +1483,7 @@ def test_cursor_jump_unscrolled_wrapped_top(tmux_server):
         tmux_move_cursor(pane, target_line, 2)
 
     time.sleep(0.1)
-    assert_cursor_on_content(tmux_server, pane_id, expected, 2)
+    assert_frozen_cursor_on_content(tmux_server, pane_id, expected, 2)
 
 
 @requires_tmux
@@ -1515,7 +1517,7 @@ def test_cursor_jump_ci_prompt_geometry():
             tmux_move_cursor(pane, target_line, 3)
 
         time.sleep(0.1)
-        assert_cursor_on_content(server, pane_id, "line2_target", 3)
+        assert_frozen_cursor_on_content(server, pane_id, "line2_target", 3)
     finally:
         server.stop()
 
