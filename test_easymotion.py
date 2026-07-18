@@ -2156,6 +2156,46 @@ def test_recapture_after_user_scrolls_within_our_freeze(tmux_server):
     )
 
 
+@requires_tmux
+def test_scrolled_jump_wide_chars_and_giant_bottom_wrap(tmux_server):
+    """Field geometry (Claude Code emits 100+-row logical lines): the
+    scrolled view sits ENTIRELY inside one giant wrapped logical line
+    containing wide chars. start-of-line at the bottom anchor walks
+    above the view top (shifting scroll), and a cells-as-steps column
+    correction overshoots on the wide chars and wraps to the next row."""
+    # one logical line of ~200 repetitions of '中x' (3 cells each) with a
+    # unique marker every stretch; wraps to ~15 rows in the 30-col pane
+    tmux_server.send_keys(
+        "clear; for i in $(seq 1 40); do printf 'M%02d\u4e2dx\u4e2d' $i; done",
+        "Enter",
+    )
+    time.sleep(0.6)
+    sn = tmux_server.server_name
+    subprocess.run(["tmux", "-L", sn, "copy-mode", "-t", tmux_server.pane_id],
+                   check=True)
+    subprocess.run(["tmux", "-L", sn, "send-keys", "-X", "-t",
+                    tmux_server.pane_id, "-N", "3", "scroll-up"], check=True)
+    time.sleep(0.2)
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        pane.lines = tmux_capture_pane(pane)
+        # target: an 'x' on a mid-view row full of wide chars
+        target_line = next(
+            i for i in range(2, pane.height)
+            if "x" in pane.lines[i] and "中" in pane.lines[i]
+        )
+        line = pane.lines[target_line]
+        true_col = line.rindex("x")
+        tmux_move_cursor(pane, target_line, true_col)
+
+    time.sleep(0.1)
+    assert_frozen_cursor_on_content(
+        tmux_server, tmux_server.pane_id, line,
+        get_string_width(line[:true_col]),
+    )
+
+
 # =============================================================================
 # Integration Tests - get_tmux_option and Config
 # =============================================================================

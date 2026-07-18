@@ -1029,12 +1029,15 @@ def tmux_move_cursor(pane, line_num, true_col):
     if pane.scroll_position > 0:
         # Scrolled pane: the view is necessarily full, so ``goto-line
         # <scroll>`` lands exactly on the bottom row of the wanted view
-        # without disturbing scroll — immune to the top-of-view wrap
-        # hazard. Climb from there.
+        # without disturbing scroll. No start-of-line here: when the
+        # bottom row belongs to a logical line taller than the view
+        # (giant TUI lines) it walks above the top and shifts scroll.
+        # The column is left arbitrary; the verify loop places it from
+        # measured state.
         x("goto-line", str(pane.scroll_position))
-        x("start-of-line")
         if pane.height - 1 > line_num:
             x("-N", str(pane.height - 1 - line_num), "cursor-up")
+        first_shot_right = False
     else:
         # Unscrolled pane: top-line is exact (row 0). start-of-line may
         # still walk above the view when row 0 continues a wrapped line
@@ -1053,7 +1056,8 @@ def tmux_move_cursor(pane, line_num, true_col):
             rows_remaining -= first_non_empty
         if rows_remaining > 0:
             x("-N", str(rows_remaining), "cursor-down")
-    if steps > 0:
+        first_shot_right = True
+    if first_shot_right and steps > 0:
         x("-N", str(steps), "cursor-right")
     NAV_TRACE.append(f"first shot: {cmds}")
     sh_tmux_batch(cmds)
@@ -1063,7 +1067,7 @@ def tmux_move_cursor(pane, line_num, true_col):
     # and re-measures — never start-of-line here: on a wrap-continuation
     # target row it walks to the logical line start and re-triggers the
     # very shift being repaired (reproduced on CI).
-    for _ in range(4):
+    for _ in range(6):
         out = sh(
             ["tmux", "display-message", "-p", "-t", pid,
              "#{copy_cursor_y},#{copy_cursor_x},#{scroll_position}"]
@@ -1084,12 +1088,19 @@ def tmux_move_cursor(pane, line_num, true_col):
             x("-N", str(dy), "cursor-down")
         elif dy < 0:
             x("-N", str(-dy), "cursor-up")
-        elif dx > 0:
-            # cell-count approximation of steps; wide chars make this an
-            # overestimate that the next round shrinks
-            x("-N", str(dx), "cursor-right")
-        elif dx < 0:
-            x("-N", str(-dx), "cursor-left")
+        elif dx != 0:
+            # convert the measured CELL position to cursor steps via the
+            # captured row content — cursor-right/left move one cell
+            # entry per step and wrap at line edges, so a raw cell delta
+            # overshoots on wide chars and can jump rows
+            idx_now = get_true_position(line, x_now)
+            move = steps - _cursor_steps(line, idx_now)
+            if move > 0:
+                x("-N", str(move), "cursor-right")
+            elif move < 0:
+                x("-N", str(-move), "cursor-left")
+            else:
+                break  # cell mismatch but same step position (edge cell)
         else:
             break
         NAV_TRACE.append(f"correction: {cmds}")
