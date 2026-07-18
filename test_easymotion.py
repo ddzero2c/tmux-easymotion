@@ -1318,14 +1318,17 @@ def test_same_pane_jump(tmux_server):
     tmux_server.send_keys('echo "line2_target"', "Enter")
     time.sleep(0.2)
 
-    # Target position: line 2, column 7
-    target_line = 2
-    target_col = 7
-
-    # Call tmux_move_cursor with patched sh() and real pane state
+    # Call tmux_move_cursor with patched sh() and real pane state.
+    # The target is derived from the captured content (real usage only
+    # ever jumps to match positions) so the test is independent of the
+    # shell prompt's row geometry.
     with patch("easymotion.sh", tmux_server.make_sh_for_server()):
         pane = easymotion.get_initial_tmux_info()[0]
         pane.lines = tmux_capture_pane(pane)
+        target_line = next(
+            i for i, ln in enumerate(pane.lines) if ln == "line2_target"
+        )
+        target_col = pane.lines[target_line].index("target")
         tmux_move_cursor(pane, target_line, target_col)
         print("NAV_TRACE:", *easymotion.NAV_TRACE, sep="\n  ")
 
@@ -1359,17 +1362,19 @@ def test_cross_pane_jump(tmux_server):
     tmux_server.send_keys_to_pane(pane2_id, 'echo "line1_target"', "Enter")
     time.sleep(0.2)
 
-    # Target position: line 1, column 5
-    target_line = 1
-    target_col = 5
-
-    # Call tmux_move_cursor with patched sh() and real pane state
+    # Call tmux_move_cursor with patched sh() and real pane state;
+    # target derived from content so shell prompt geometry can't put a
+    # hardcoded coordinate past a row's end
     with patch("easymotion.sh", tmux_server.make_sh_for_server()):
         pane2 = next(
             p for p in easymotion.get_initial_tmux_info()
             if p.pane_id == pane2_id
         )
         pane2.lines = tmux_capture_pane(pane2)
+        target_line = next(
+            i for i, ln in enumerate(pane2.lines) if ln == "line1_target"
+        )
+        target_col = pane2.lines[target_line].index("target")
         tmux_move_cursor(pane2, target_line, target_col)
         print("NAV_TRACE:", *easymotion.NAV_TRACE, sep="\n  ")
 
