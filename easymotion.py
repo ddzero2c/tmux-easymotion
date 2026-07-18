@@ -604,7 +604,7 @@ class StartupInfo:
     window_id: str
 
 
-def get_startup_info() -> Optional[StartupInfo]:
+def get_startup_info(window_target: Optional[str] = None) -> Optional[StartupInfo]:
     """Fetch everything easymotion needs at startup in ONE tmux invocation:
     version, client size, window id, global options, and pane geometry.
 
@@ -618,7 +618,7 @@ def get_startup_info() -> Optional[StartupInfo]:
     queries.
     """
     try:
-        return _fetch_startup_info()
+        return _fetch_startup_info(window_target)
     except Exception:
         # Logging isn't configured this early in the happy path (options
         # come from this very query); set it up now so the failure lands
@@ -629,15 +629,20 @@ def get_startup_info() -> Optional[StartupInfo]:
         return None
 
 
-def _fetch_startup_info() -> StartupInfo:
+def _fetch_startup_info(window_target: Optional[str] = None) -> StartupInfo:
     global _tmux_options
+    # In overlay-input mode this process runs in the FOCUSED overlay
+    # window, so the source panes live in the last window: target '!'.
+    panes_cmd = ["list-panes", "-F", _PANE_FORMAT]
+    if window_target:
+        panes_cmd += ["-t", window_target]
     out = sh_tmux_batch(
         [
             ["display-message", "-p", "#{version},#{client_width},#{client_height}"],
             _window_id_cmd(),
             ["show-options", "-g"],
             ["display-message", "-p", _STARTUP_SEP],
-            ["list-panes", "-F", _PANE_FORMAT],
+            panes_cmd,
         ]
     )
     lines = out.split("\n")
@@ -697,10 +702,19 @@ class PaneInfo:
 
 
 def get_terminal_size():
-    """Get terminal size from tmux"""
+    """Get terminal size from tmux. Falls back to the window's size when
+    no client is attached (headless test servers): window dimensions
+    already exclude the status line, matching client_height - 1."""
     output = sh(["tmux", "display-message", "-p", "#{client_width},#{client_height}"])
-    width, height = map(int, output.strip().split(","))
-    return width, height - 1  # Subtract 1 from height
+    try:
+        width, height = map(int, output.strip().split(","))
+        return width, height - 1  # Subtract 1 from height
+    except ValueError:
+        output = sh(
+            ["tmux", "display-message", "-p", "#{window_width},#{window_height}"]
+        )
+        width, height = map(int, output.strip().split(","))
+        return width, height
 
 
 def _window_id_cmd() -> list:
@@ -1254,41 +1268,46 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
     global _live_panes
     _live_panes = panes
 
-    # Get motion type from command line argument
+    # Motion type and (optionally) the search chars from argv. Without
+    # argv chars the overlay reads them from its OWN stdin: the binding
+    # opens this window focused, panes are already frozen above, so the
+    # user picks the target on a stable frame and early keystrokes just
+    # buffer in our pty.
     motion_type = sys.argv[1] if len(sys.argv) > 1 else "s"
-
-    # Determine search mode and find matches
-    if motion_type == "s":
-        # 1 char search
-        search_pattern = getch(sys.argv[2], 1)
-        search_pattern = search_pattern.replace("\n", "").replace("\r", "")
-        if not search_pattern:
-            release_frozen(panes)
-            return
-        matches = find_matches(
-            panes,
-            search_pattern,
-            case_sensitive=config.case_sensitive,
-            smartsign=config.smartsign,
-        )
-    elif motion_type == "s2":
-        # 2 char search
-        raw_input = getch(sys.argv[2], 2)
-        logging.debug(f"Raw input (s2): {repr(raw_input)}")
-        search_pattern = raw_input.replace("\n", "").replace("\r", "")
-        logging.debug(f"Search pattern (s2): {repr(search_pattern)}")
-        if not search_pattern:
-            release_frozen(panes)
-            return
-        matches = find_matches(
-            panes,
-            search_pattern,
-            case_sensitive=config.case_sensitive,
-            smartsign=config.smartsign,
-        )
-    else:
+    if motion_type not in ("s", "s2"):
         logging.error(f"Invalid motion type: {motion_type}")
+        release_frozen(panes)
         exit(1)
+    num_chars = 2 if motion_type == "s2" else 1
+    argv_chars = sys.argv[2] if len(sys.argv) > 2 else None
+
+    terminal_width, terminal_height = (
+        startup.terminal_size or get_terminal_size()
+    )
+    if argv_chars is None:
+        # overlay-input mode: show the frozen frame before reading chars
+        draw_all_panes(
+            panes,
+            max_x,
+            terminal_height,
+            screen,
+            config.vertical_border,
+            config.horizontal_border,
+        )
+        screen.refresh()
+
+    raw = getch(argv_chars, num_chars)
+    logging.debug(f"Raw input ({motion_type}): {repr(raw)}")
+    search_pattern = raw.replace("\n", "").replace("\r", "")
+    if len(search_pattern) < num_chars:
+        release_frozen(panes)
+        return
+    matches = find_matches(
+        panes,
+        search_pattern,
+        case_sensitive=config.case_sensitive,
+        smartsign=config.smartsign,
+    )
 
     # Check for matches
     if len(matches) == 0:
@@ -1334,18 +1353,20 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
                     )
                 )
 
-    terminal_width, terminal_height = startup.terminal_size or get_terminal_size()
-    draw_all_panes(
-        panes,
-        max_x,
-        terminal_height,
-        screen,
-        config.vertical_border,
-        config.horizontal_border,
-    )
+    if argv_chars is not None:
+        # legacy argv mode (command-prompt bindings): the frame wasn't
+        # drawn yet and the overlay window was created detached
+        draw_all_panes(
+            panes,
+            max_x,
+            terminal_height,
+            screen,
+            config.vertical_border,
+            config.horizontal_border,
+        )
+        overlay_window_id = startup.window_id or get_current_window_id()
+        sh(["tmux", "select-window", "-t", overlay_window_id])
     draw_all_hints(positions, terminal_height, screen)
-    overlay_window_id = startup.window_id or get_current_window_id()
-    sh(["tmux", "select-window", "-t", overlay_window_id])
 
     # Handle user input
     key_sequence = ""
@@ -1373,7 +1394,26 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
 
 
 if __name__ == "__main__":
-    startup = get_startup_info()  # primes options cache + tmux version
+    # overlay-input mode (no search chars in argv): we run inside the
+    # focused overlay window; the source panes are in the LAST window
+    _source_window = None
+    if "--source" in sys.argv:
+        i = sys.argv.index("--source")
+        _source_window = sys.argv[i + 1]
+        del sys.argv[i : i + 2]
+    _overlay_input = len(sys.argv) <= 2
+    # Switch stdin to raw immediately so keys typed right after the
+    # binding (before the frame is drawn) land in the input queue for
+    # getch instead of being absorbed by the canonical line editor. Keys
+    # in the first ~25ms (interpreter startup) can still be lost — below
+    # any human keypress interval.
+    _saved_termios = None
+    if _overlay_input and sys.stdin.isatty():
+        _saved_termios = termios.tcgetattr(sys.stdin.fileno())
+        tty.setraw(sys.stdin.fileno())
+    startup = get_startup_info(
+        _source_window or ("!" if _overlay_input else None)
+    )
     config = Config.from_tmux()
     screen: Screen = Curses(config) if config.use_curses else AnsiSequence(config)
     try:
@@ -1385,4 +1425,8 @@ if __name__ == "__main__":
         logging.error(f"Error occurred: {str(e)}", exc_info=True)
     finally:
         release_frozen(_live_panes)
+        if _saved_termios is not None:
+            termios.tcsetattr(
+                sys.stdin.fileno(), termios.TCSADRAIN, _saved_termios
+            )
         screen.cleanup()

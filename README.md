@@ -37,7 +37,7 @@ Press `prefix` + `I` to install
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `@easymotion-s` | `s` | 1-character search key binding |
+| `@easymotion-s` | `s` | 1-character search key binding (opens the overlay; type the character on the frozen frame) |
 | `@easymotion-s2` | (none) | 2-character search key binding (leap.nvim style) |
 | `@easymotion-hints` | `asdghklqwertyuiopzxcvbnmfj;` | Characters used for hints |
 | `@easymotion-case-sensitive` | `false` | Case-sensitive search |
