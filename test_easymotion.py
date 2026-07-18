@@ -962,28 +962,32 @@ class TmuxTestServer:
     the terminal size from attached clients.
     """
 
-    def __init__(self, width=30, height=10):
+    def __init__(self, width=30, height=10, shell_command=None):
         self.server_name = f"pytest_{uuid.uuid4().hex[:8]}"
         self.width = width
         self.height = height
+        self.shell_command = shell_command  # e.g. custom-PS1 bash for geometry tests
         self.pane_id: str = ""
 
     def start(self):
         """Start the tmux server with controlled dimensions."""
+        cmd = [
+            "tmux",
+            "-L",
+            self.server_name,
+            "new-session",
+            "-d",
+            "-s",
+            "test",
+            "-x",
+            str(self.width),
+            "-y",
+            str(self.height),
+        ]
+        if self.shell_command:
+            cmd.append(self.shell_command)
         result = subprocess.run(
-            [
-                "tmux",
-                "-L",
-                self.server_name,
-                "new-session",
-                "-d",
-                "-s",
-                "test",
-                "-x",
-                str(self.width),
-                "-y",
-                str(self.height),
-            ],
+            cmd,
             capture_output=True,
             text=True,
         )
@@ -1150,16 +1154,14 @@ def test_cursor_jump_on_wrapped_line(tmux_server):
     tmux_server.send_keys(f'printf "{content}"', "Enter")
     time.sleep(0.3)
 
-    # Create PaneInfo
-    pane = PaneInfo(pane_id, active=True, start_y=0, height=10, start_x=0, width=30)
-    pane.copy_mode = False
-
     # Jump to line 2 (the wrapped portion with C's)
     target_line = 2
     target_col = 5
 
-    # Call tmux_move_cursor with patched sh()
+    # Call tmux_move_cursor with patched sh() and real pane state
     with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        pane.lines = tmux_capture_pane(pane)
         tmux_move_cursor(pane, target_line, target_col)
 
     time.sleep(0.1)
@@ -1174,6 +1176,9 @@ def test_cursor_jump_on_wrapped_line(tmux_server):
     )
     assert cursor_x == target_col, (
         f"Cursor X position wrong: expected {target_col}, got {cursor_x}"
+    )
+    assert_cursor_on_content(
+        tmux_server, pane_id, pane.lines[target_line], target_col
     )
 
 
@@ -1248,6 +1253,9 @@ def test_cursor_jump_with_empty_top_rows():
         target_col = pane.lines[target_line].index(target_marker)
 
         with patch("easymotion.sh", server.make_sh_for_server()):
+            lines = pane.lines
+            pane = easymotion.get_initial_tmux_info()[0]
+            pane.lines = lines
             tmux_move_cursor(pane, target_line, target_col)
 
         time.sleep(0.1)
@@ -1261,8 +1269,33 @@ def test_cursor_jump_with_empty_top_rows():
         assert cursor_x == target_col, (
             f"Cursor at col {cursor_x}, expected {target_col}"
         )
+        assert_cursor_on_content(
+            server, pane_id, pane.lines[target_line], target_col
+        )
     finally:
         server.stop()
+
+
+def assert_cursor_on_content(server, pane_id, expected_text, expected_col=None):
+    """Assert the copy-mode cursor sits on the row whose CONTENT equals
+    ``expected_text``, regardless of any view shift — coordinate-only
+    assertions pass even when the jump landed on the wrong content (the
+    view shifted underneath), so every jump test must verify content."""
+    out = subprocess.run(
+        ["tmux", "-L", server.server_name, "display-message", "-p", "-t", pane_id,
+         "#{copy_cursor_y},#{copy_cursor_x},#{scroll_position},#{pane_height}"],
+        capture_output=True, text=True).stdout.strip()
+    y, x, scroll, height = (int(v or 0) for v in out.split(","))
+    row_text = subprocess.run(
+        ["tmux", "-L", server.server_name, "capture-pane", "-p", "-t", pane_id,
+         "-S", str(-scroll), "-E", str(height - 1 - scroll)],
+        capture_output=True, text=True).stdout.split("\n")[y]
+    assert row_text.rstrip() == expected_text.rstrip(), (
+        f"cursor on content {row_text.rstrip()!r}, expected "
+        f"{expected_text.rstrip()!r} (y={y} scroll={scroll})"
+    )
+    if expected_col is not None:
+        assert x == expected_col, f"cursor col {x}, expected {expected_col}"
 
 
 # =============================================================================
@@ -1284,16 +1317,14 @@ def test_same_pane_jump(tmux_server):
     tmux_server.send_keys('echo "line2_target"', "Enter")
     time.sleep(0.2)
 
-    # Create PaneInfo for the pane
-    pane = PaneInfo(pane_id, active=True, start_y=0, height=10, start_x=0, width=30)
-    pane.copy_mode = False
-
     # Target position: line 2, column 7
     target_line = 2
     target_col = 7
 
-    # Call tmux_move_cursor with patched sh()
+    # Call tmux_move_cursor with patched sh() and real pane state
     with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        pane.lines = tmux_capture_pane(pane)
         tmux_move_cursor(pane, target_line, target_col)
 
     time.sleep(0.1)
@@ -1305,6 +1336,9 @@ def test_same_pane_jump(tmux_server):
     )
     assert cursor_x == target_col, (
         f"Cursor X position wrong: expected {target_col}, got {cursor_x}"
+    )
+    assert_cursor_on_content(
+        tmux_server, pane_id, pane.lines[target_line], target_col
     )
 
 
@@ -1323,16 +1357,17 @@ def test_cross_pane_jump(tmux_server):
     tmux_server.send_keys_to_pane(pane2_id, 'echo "line1_target"', "Enter")
     time.sleep(0.2)
 
-    # Create PaneInfo for pane2 (the target)
-    pane2 = PaneInfo(pane2_id, active=False, start_y=0, height=5, start_x=0, width=30)
-    pane2.copy_mode = False
-
     # Target position: line 1, column 5
     target_line = 1
     target_col = 5
 
-    # Call tmux_move_cursor with patched sh()
+    # Call tmux_move_cursor with patched sh() and real pane state
     with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane2 = next(
+            p for p in easymotion.get_initial_tmux_info()
+            if p.pane_id == pane2_id
+        )
+        pane2.lines = tmux_capture_pane(pane2)
         tmux_move_cursor(pane2, target_line, target_col)
 
     time.sleep(0.1)
@@ -1349,6 +1384,226 @@ def test_cross_pane_jump(tmux_server):
     )
     assert cursor_x == target_col, (
         f"Cursor X position wrong: expected {target_col}, got {cursor_x}"
+    )
+    assert_cursor_on_content(
+        tmux_server, pane2_id, pane2.lines[target_line], target_col
+    )
+
+
+# =============================================================================
+# Navigator regression tests: wrap-at-top shift, CI prompt geometry,
+# copy-mode movement semantics, zero-width chars, pre-move guard
+# =============================================================================
+
+
+@requires_tmux
+def test_cursor_jump_unscrolled_wrapped_top(tmux_server):
+    """T2 — audit #1: pane NOT scrolled, but the visible top row is the
+    continuation of a wrapped logical line (long line pushed into history).
+    start-of-line at the top walks above the view and shifts scroll; blind
+    row counting then lands on the wrong CONTENT."""
+    pane_id = tmux_server.pane_id
+    # a 70-char line wrapping to 3 rows (30-col pane) followed by tail
+    # lines; then push filler lines until the wrapped line's LAST row is
+    # the visible top (a continuation row) — probing instead of counting
+    # keeps the fixture independent of the shell prompt's geometry
+    tmux_server.send_keys(
+        "clear; printf 'W%.0s' {1..70}; echo; "
+        "for i in 1 2 3 4 5; do echo LINE_$i qq; done",
+        "Enter",
+    )
+    time.sleep(0.5)
+
+    def tmx(*args):
+        return subprocess.run(
+            ["tmux", "-L", tmux_server.server_name, *args],
+            capture_output=True, text=True).stdout.strip()
+
+    def top_is_wrap_continuation():
+        """Detect via the mechanism itself: on a continuation top row,
+        top-line + start-of-line scrolls the view; cancel restores."""
+        tmx("copy-mode", "-t", pane_id)
+        tmx("send-keys", "-X", "-t", pane_id, "top-line")
+        tmx("send-keys", "-X", "-t", pane_id, "start-of-line")
+        shifted = tmx("display-message", "-p", "-t", pane_id,
+                      "#{scroll_position}") != "0"
+        tmx("send-keys", "-X", "-t", pane_id, "cancel")
+        return shifted
+
+    for i in range(15):
+        if top_is_wrap_continuation():
+            break
+        tmux_server.send_keys(f"echo FILL_{i}_mark", "Enter")
+        time.sleep(0.15)
+    else:
+        pytest.skip("could not line up a wrap-continuation top row")
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        assert pane.scroll_position == 0
+        pane.lines = tmux_capture_pane(pane)
+        # target: a uniquely-identifiable visible row in the lower half
+        target_line = max(
+            i for i, ln in enumerate(pane.lines)
+            if ln.startswith(("LINE_", "FILL_"))
+        )
+        expected = pane.lines[target_line]
+        tmux_move_cursor(pane, target_line, 2)
+
+    time.sleep(0.1)
+    assert_cursor_on_content(tmux_server, pane_id, expected, 2)
+
+
+@requires_tmux
+def test_cursor_jump_ci_prompt_geometry():
+    """T3 — the CI failure class: a long shell prompt makes command lines
+    wrap in a narrow pane; once content scrolls into history the visible
+    top row is a wrap continuation and jumps land on wrong content."""
+    server = TmuxTestServer(
+        width=30, height=10,
+        shell_command=(
+            "env PS1='runner@fv-az1234-5678-90:~/work$ ' "
+            "bash --norc --noprofile -i"
+        ),
+    )
+    try:
+        server.start()
+    except RuntimeError as e:
+        pytest.skip(str(e))
+    try:
+        pane_id = server.pane_id
+        for c in ('echo "line0"', 'echo "line1"', 'echo "line2_target"'):
+            server.send_keys(c, "Enter")
+        time.sleep(0.5)
+
+        with patch("easymotion.sh", server.make_sh_for_server()):
+            pane = easymotion.get_initial_tmux_info()[0]
+            pane.lines = tmux_capture_pane(pane)
+            target_line = next(
+                i for i, ln in enumerate(pane.lines) if ln == "line2_target"
+            )
+            tmux_move_cursor(pane, target_line, 3)
+
+        time.sleep(0.1)
+        assert_cursor_on_content(server, pane_id, "line2_target", 3)
+    finally:
+        server.stop()
+
+
+@requires_tmux
+def test_copy_mode_movement_semantics(tmux_server):
+    """T4 — lock the copy-mode semantics all movement math relies on:
+    (a) -N k cursor-down moves k SCREEN rows, even across wrapped lines;
+    (b) -N big cursor-right does NOT clamp at end of line — it wraps to
+        following lines (so column overshoot becomes a wrong-line jump)."""
+    sn = tmux_server.server_name
+
+    def tmx(*args):
+        return subprocess.run(
+            ["tmux", "-L", sn, *args], capture_output=True, text=True
+        ).stdout.strip()
+
+    tmux_server.send_keys(
+        "clear; printf 'AAA\\n'; printf 'B%.0s' {1..70}; "
+        "printf '\\nCCC\\nDDD\\n'",
+        "Enter",
+    )
+    time.sleep(0.4)
+    tmx("copy-mode")
+    # (a) screen-row stepping across the wrapped B-block (3 screen rows)
+    tmx("send-keys", "-X", "top-line")
+    tmx("send-keys", "-X", "start-of-line")
+    tmx("send-keys", "-X", "-N", "4", "cursor-down")
+    assert tmx("display-message", "-p", "#{copy_cursor_y}") == "4", (
+        "cursor-down is expected to move per SCREEN row (wrapped rows "
+        "counted individually); movement math depends on this"
+    )
+    # (b) cursor-right past EOL wraps instead of clamping
+    tmx("send-keys", "-X", "top-line")
+    tmx("send-keys", "-X", "start-of-line")
+    tmx("send-keys", "-X", "-N", "30", "cursor-right")  # row 0 is 'AAA'
+    y = int(tmx("display-message", "-p", "#{copy_cursor_y}"))
+    assert y != 0, (
+        "cursor-right at EOL is expected to WRAP to following lines, not "
+        "clamp — column overshoot must therefore never be relied on to "
+        "stay on the row"
+    )
+    tmx("send-keys", "-X", "cancel")
+
+
+def test_zero_width_char_widths():
+    """T5a — zero-width code points must count as width 0: tmux merges
+    combining marks into the previous cell, and ZWJ/ZWSP/VS16 occupy no
+    cell of their own."""
+    from easymotion import _char_width_no_tab
+
+    assert _char_width_no_tab("́") == 0  # combining acute
+    assert _char_width_no_tab("‍") == 0  # ZWJ
+    assert _char_width_no_tab("‌") == 0  # ZWNJ
+    assert _char_width_no_tab("​") == 0  # ZWSP
+    assert _char_width_no_tab("️") == 0  # VS16
+    # ordinary chars unchanged
+    assert _char_width_no_tab("a") == 1
+    assert _char_width_no_tab("中") == 2
+    assert get_string_width("aébx") == 4  # a,é,b,x = 4 cells
+
+
+@requires_tmux
+def test_cursor_jump_combining_chars(tmux_server):
+    """T5b — a line containing a combining mark: the jump must land on the
+    correct screen CELL. cursor-right steps once per cell (the combining
+    mark rides along with its base char), while the capture string carries
+    the combining mark as an extra character."""
+    pane_id = tmux_server.pane_id
+    # 'aébx' with decomposed é (e + U+0301): cells a|é|b|x
+    tmux_server.send_keys("clear; printf 'ae\\xcc\\x81bx\\n'", "Enter")
+    time.sleep(0.4)
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        pane.lines = tmux_capture_pane(pane)
+        line = pane.lines[0]
+        assert "́" in line, f"fixture drift: {line!r}"
+        # jump to 'x': visual col from our width model
+        visual_col = get_string_width(line[: line.index("x")])
+        tmux_move_cursor(pane, 0, easymotion.get_true_position(line, visual_col))
+
+    time.sleep(0.1)
+    out = subprocess.run(
+        ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
+         "-t", pane_id, "#{copy_cursor_x}"],
+        capture_output=True, text=True).stdout.strip()
+    assert int(out) == 3, (
+        f"cursor cell {out}, expected 3 ('x' is the 4th cell: a|é|b|x)"
+    )
+
+
+@requires_tmux
+def test_jump_cancelled_when_content_changed(tmux_server):
+    """T6 — pre-move guard: if the pane produced output between capture
+    and jump (history grew), the jump must be cancelled instead of landing
+    on stale coordinates."""
+    pane_id = tmux_server.pane_id
+    tmux_server.send_keys("clear; for i in 1 2 3; do echo ROW_$i; done", "Enter")
+    time.sleep(0.4)
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        pane.lines = tmux_capture_pane(pane)
+        # content changes after capture: push enough lines into history
+        tmux_server.send_keys("for i in 4 5 6 7 8 9 10 11 12; do echo ROW_$i; done",
+                              "Enter")
+        time.sleep(0.4)
+        tmux_move_cursor(pane, 1, 2)
+
+    time.sleep(0.1)
+    # guard must refuse to enter copy-mode / jump on stale coordinates
+    in_mode = subprocess.run(
+        ["tmux", "-L", tmux_server.server_name, "display-message", "-p",
+         "-t", pane_id, "#{pane_in_mode}"],
+        capture_output=True, text=True).stdout.strip()
+    assert in_mode == "0", (
+        "jump should be cancelled when pane content changed since capture"
     )
 
 
