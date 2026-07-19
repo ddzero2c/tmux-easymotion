@@ -64,6 +64,39 @@ def test_something(tmux_server):
 - `find_matches(panes, search_pattern)` - Finds all matches across panes
 - `get_true_position(line, visual_col)` - Converts visual column to string index (for CJK)
 
+## tmux Copy-Mode Semantics (hard-won, each verified empirically)
+
+- Entering copy-mode snapshots history+screen; `capture-pane` reads the LIVE
+  grid, which drifts from the snapshot (TUI in-place rewrites change what
+  scrolls into history; width changes rewrap scrollback non-uniformly).
+  Never use the live grid as a proxy for a frozen view.
+- Read frozen views via `#{copy_cursor_line}` walk (top-line + cursor-down,
+  one batch). Returns SCREEN rows (wrap/tab/CJK exact), space-padded to pane
+  width. Requires tmux >= 3.6: older `format_grid_line` truncates at the
+  first wide character (`break` on the padding cell; broken on 3.4/3.5a).
+- The copy-mode position indicator is rendered INTO the view's top row;
+  `toggle-position` (or `copy-mode -H`) before reading, restore after.
+- `goto-line` landing is unreliable on long-frozen streaming panes, and any
+  scroll excursion re-anchors the frozen view against the grown buffer —
+  same scroll number, shifted content. Jump navigation must move RELATIVE
+  to the current cursor row and never touch scroll.
+- `start-of-line` on a wrap-continuation row walks above the view and
+  shifts scroll (the #18 hazard) — it has leaked in via cursor-restore
+  paths twice; grep for it whenever touching copy-mode movement.
+- `#{scroll_position}` is snapshot-relative and stays fixed while the live
+  grid grows; re-applying the same number via goto-line is NOT a no-op.
+
+## Debugging & Version Matrix
+
+- Field forensics: `~/easymotion.log` (all tmux commands + results) and
+  `easymotion.NAV_TRACE` (last jump's decisions).
+- Test on all three bands: tmux 3.6a (brew), 3.5a
+  (`docker run python:3.12-slim` + apt tmux), 3.4 (build from source; CI's
+  ubuntu-24.04). Version-gated paths mean a green suite on one band proves
+  nothing about the others.
+- Bug-injection validation: restore via Python file replacement, never
+  `git checkout` (it wipes uncommitted fixes).
+
 ## Configuration Options
 
 Set in tmux.conf:

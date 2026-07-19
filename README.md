@@ -2,11 +2,6 @@
 
 [![Tests](https://github.com/ddzero2c/tmux-easymotion/actions/workflows/test.yml/badge.svg)](https://github.com/ddzero2c/tmux-easymotion/actions/workflows/test.yml)
 
-> [!NOTE]
-> **📢 Active Development**
->
-> The master branch may include breaking changes. Please use a tagged version for stability.
-
 ![demo](https://github.com/user-attachments/assets/6f9ef875-47b1-4dee-823d-f1990f2af51e)
 
 ## Features
@@ -16,6 +11,7 @@
 - **CJK support** - Proper handling of wide characters
 - **Smartsign** - Match shifted symbols (e.g., `1` matches `!`)
 - **Distance-based hints** - Closer matches get shorter hints
+- **Frozen frames** - Panes freeze the moment you trigger, so you always land on what you saw. On tmux ≥ 3.6 frozen views are read exactly; older tmux uses an approximation with [known edge cases](#requirements)
 
 ## Installation
 
@@ -33,11 +29,16 @@ Press `prefix` + `I` to install
 > **For development version:** Use `set -g @plugin 'ddzero2c/tmux-easymotion'` (master branch, may be unstable)
 
 
+## Requirements
+
+- tmux ≥ 3.4 (Python 3.8+)
+- **tmux ≥ 3.6 recommended**: overlays of re-triggered or user-scrolled frozen panes are read directly from the frozen view (exact). Older tmux lacks a reliable way to read a copy-mode view (`#{copy_cursor_line}` truncates at wide characters before 3.6), so it falls back to reconstructing the frame from the live grid — accurate in common cases, but the frame can drift when a TUI rewrites its screen in place or the pane is resized while frozen.
+
 ## Configuration
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `@easymotion-s` | `s` | 1-character search key binding |
+| `@easymotion-s` | `s` | 1-character search key binding (opens the overlay; type the character on the frozen frame) |
 | `@easymotion-s2` | (none) | 2-character search key binding (leap.nvim style) |
 | `@easymotion-hints` | `asdghklqwertyuiopzxcvbnmfj;` | Characters used for hints |
 | `@easymotion-case-sensitive` | `false` | Case-sensitive search |

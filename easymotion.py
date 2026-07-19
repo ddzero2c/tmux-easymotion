@@ -68,6 +68,17 @@ def _position_aware_tabs() -> bool:
     return TMUX_VERSION >= (3, 6)
 
 
+def _direct_view_read_ok() -> bool:
+    # #{copy_cursor_line} truncates at the first wide character on tmux
+    # < 3.6 (format_grid_line stops at the padding cell; verified broken
+    # on 3.4 and 3.5a, fixed on 3.6a); the direct frozen-view read needs
+    # the fixed behaviour.
+    global TMUX_VERSION
+    if TMUX_VERSION is None:
+        TMUX_VERSION = _detect_tmux_version()
+    return TMUX_VERSION >= (3, 6)
+
+
 def _parse_option_lines(lines) -> dict:
     """Parse ``show-options -g`` output lines into a dict."""
     options = {}
@@ -405,8 +416,16 @@ def calculate_tab_width(position: int, tab_size: int = 8) -> int:
     return tab_size - (position % tab_size)
 
 
+# Zero-width code points beyond combining marks: ZWSP, ZWNJ, ZWJ, VS16.
+_ZERO_WIDTH_CHARS = frozenset("​‌‍️")
+
+
 @functools.lru_cache(maxsize=1024)
 def _char_width_no_tab(char: str) -> int:
+    if char in _ZERO_WIDTH_CHARS or unicodedata.combining(char):
+        return 0
+    # tmux merges combining marks into the preceding cell; zero-width
+    # code points occupy no cell of their own
     return 2 if unicodedata.east_asian_width(char) in "WF" else 1
 
 
@@ -515,7 +534,8 @@ _PANE_FORMAT = (
     "#{pane_id},#{window_zoomed_flag},#{pane_active},"
     "#{pane_top},#{pane_height},#{pane_left},#{pane_width},"
     "#{pane_in_mode},#{scroll_position},"
-    "#{cursor_y},#{cursor_x},#{copy_cursor_y},#{copy_cursor_x}"
+    "#{cursor_y},#{cursor_x},#{copy_cursor_y},#{copy_cursor_x},"
+    "#{history_size},#{@easymotion_frozen_hist}"
 )
 
 
@@ -547,6 +567,8 @@ def _parse_pane_lines(lines) -> list:
             cursor_x,
             copy_cursor_y,
             copy_cursor_x,
+            history_size,
+            frozen_hist,
         ) = fields
 
         # Only show all panes in non-zoomed state, or only active pane in zoomed state
@@ -565,6 +587,10 @@ def _parse_pane_lines(lines) -> list:
         # Optimize flag setting
         pane.copy_mode = in_mode == "1"
         pane.scroll_position = int(scroll_pos or 0)
+        pane.history_size = int(history_size or 0)
+        pane.zoomed = zoomed == "1"
+        # set while WE hold the pane frozen: history size at freeze time
+        pane.frozen_hist = int(frozen_hist) if frozen_hist else None
 
         # Set cursor position
         if in_mode == "1":  # If in copy mode
@@ -592,7 +618,7 @@ class StartupInfo:
     window_id: str
 
 
-def get_startup_info() -> Optional[StartupInfo]:
+def get_startup_info(window_target: Optional[str] = None) -> Optional[StartupInfo]:
     """Fetch everything easymotion needs at startup in ONE tmux invocation:
     version, client size, window id, global options, and pane geometry.
 
@@ -606,7 +632,7 @@ def get_startup_info() -> Optional[StartupInfo]:
     queries.
     """
     try:
-        return _fetch_startup_info()
+        return _fetch_startup_info(window_target)
     except Exception:
         # Logging isn't configured this early in the happy path (options
         # come from this very query); set it up now so the failure lands
@@ -617,15 +643,20 @@ def get_startup_info() -> Optional[StartupInfo]:
         return None
 
 
-def _fetch_startup_info() -> StartupInfo:
+def _fetch_startup_info(window_target: Optional[str] = None) -> StartupInfo:
     global _tmux_options
+    # In overlay-input mode this process runs in the FOCUSED overlay
+    # window, so the source panes live in the last window: target '!'.
+    panes_cmd = ["list-panes", "-F", _PANE_FORMAT]
+    if window_target:
+        panes_cmd += ["-t", window_target]
     out = sh_tmux_batch(
         [
             ["display-message", "-p", "#{version},#{client_width},#{client_height}"],
             _window_id_cmd(),
             ["show-options", "-g"],
             ["display-message", "-p", _STARTUP_SEP],
-            ["list-panes", "-F", _PANE_FORMAT],
+            panes_cmd,
         ]
     )
     lines = out.split("\n")
@@ -659,6 +690,11 @@ class PaneInfo:
         "scroll_position",
         "cursor_y",
         "cursor_x",
+        "history_size",
+        "zoomed",
+        "was_in_mode",
+        "frozen",
+        "frozen_hist",
     )
 
     def __init__(self, pane_id, active, start_y, height, start_x, width):
@@ -674,13 +710,27 @@ class PaneInfo:
         self.scroll_position = 0
         self.cursor_y = 0
         self.cursor_x = 0
+        self.history_size = 0
+        self.zoomed = False
+        self.was_in_mode = False
+        self.frozen = False
+        self.frozen_hist: Optional[int] = None
 
 
 def get_terminal_size():
-    """Get terminal size from tmux"""
+    """Get terminal size from tmux. Falls back to the window's size when
+    no client is attached (headless test servers): window dimensions
+    already exclude the status line, matching client_height - 1."""
     output = sh(["tmux", "display-message", "-p", "#{client_width},#{client_height}"])
-    width, height = map(int, output.strip().split(","))
-    return width, height - 1  # Subtract 1 from height
+    try:
+        width, height = map(int, output.strip().split(","))
+        return width, height - 1  # Subtract 1 from height
+    except ValueError:
+        output = sh(
+            ["tmux", "display-message", "-p", "#{window_width},#{window_height}"]
+        )
+        width, height = map(int, output.strip().split(","))
+        return width, height
 
 
 def _window_id_cmd() -> list:
@@ -699,80 +749,463 @@ def get_current_window_id():
 
 
 def getch(input_str=None, num_chars=1):
-    """Get character(s) from terminal or file
+    """Get character(s) from the terminal (raw, via os.read — the
+    buffered sys.stdin TextIO layer proved unreliable for raw pty reads
+    on CI runners) or from ``input_str`` when provided.
 
     Args:
         input_str: Optional string. If None, read from stdin.
         num_chars: Number of characters to read (default: 1)
     """
     if input_str is None:
-        # Read from stdin
+        import codecs
+
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        chars = ""
         try:
             tty.setraw(fd)
-            ch = sys.stdin.read(num_chars)
+            while len(chars) < num_chars:
+                data = os.read(fd, 64)
+                if not data:
+                    break
+                chars += decoder.decode(data)
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+        ch = chars[:num_chars]
     else:
         ch = input_str[:num_chars]
-    if ch == "\x03":
+    if "\x03" in ch:
         logging.info("Operation cancelled by user")
         exit(1)
 
     return ch
 
 
+# --- legacy frozen-frame machinery (tmux < 3.6 only) ------------------
+# On these versions #{copy_cursor_line} is unusable (wide-char
+# truncation, fixed in tmux 3.6), so frozen views are approximated from the live grid:
+# a frame cache written at freeze time + history splicing for panes we
+# froze, and content-anchor search for panes the user froze. Known
+# limitations (in-place TUI rewrites near the frozen screen band,
+# scrollback rewrap on width changes) apply only here.
+
+def _capture_scrollback(pane_id: str, offset: int, height: int) -> list:
+    """Capture ``height`` rows ending ``offset`` rows above the live
+    bottom (offset 0 = the visible screen)."""
+    cmd = ["capture-pane", "-p", "-t", pane_id]
+    if offset > 0:
+        cmd.extend(["-S", str(-offset), "-E", str(-(offset - height + 1))])
+    return sh(["tmux", *cmd])[:-1].split("\n")
+
+
+def _frozen_frame_path(pane_id: str) -> str:
+    """Per-pane frozen-frame cache path, scoped to the tmux SERVER: pane
+    ids restart at %0 on every server, so an unscoped path would let one
+    server's cache (e.g. an isolated test server) clobber another's."""
+    import hashlib
+    import tempfile
+
+    socket = os.environ.get("TMUX", "").split(",")[0] or "default"
+    scope = hashlib.sha1(socket.encode()).hexdigest()[:8]
+    return os.path.join(
+        tempfile.gettempdir(),
+        f"tmux_easymotion_{os.getuid()}_{scope}_frame_{pane_id.lstrip('%')}",
+    )
+
+
+def _read_frozen_row(pane_id: str, position_cmd: str) -> str:
+    """Read one row's content out of a frozen copy-mode view via a
+    cursor selection (capture-pane cannot see frozen views). Cleans the
+    buffer it creates so the user's paste stack is left intact."""
+    cmds = [["send-keys", "-X", "-t", pane_id, c] for c in (
+        "clear-selection", position_cmd, "start-of-line",
+        "begin-selection", "end-of-line", "copy-selection-no-clear",
+    )]
+    sh_tmux_batch(cmds)
+    # buffer cleanup is folded into the caller's next batch
+    return sh(["tmux", "show-buffer"]).rstrip("\n")
+
+
+def _reconstruct_user_frozen_frame(pane):
+    """The user froze this pane themselves (their copy-mode) and content
+    kept streaming: their view is CONTENT-anchored while capture-pane
+    offsets are live-relative. Locate their view in the live grid by its
+    top and bottom row contents and return that frame; None when the
+    anchors are blank or ambiguous (callers fall back to a live-relative
+    capture — the documented limitation)."""
+    pid = pane.pane_id
+    top = _read_frozen_row(pid, "top-line")
+    bottom = _read_frozen_row(pid, "bottom-line")
+    # The reads' start-of-line can walk above a wrap-continuation top
+    # row and shift scroll (the #18 hazard) — measure and undo before
+    # restoring the cursor, since jump navigation trusts the live
+    # scroll/cursor state (it no longer resets scroll via goto-line).
+    restore = [["delete-buffer"], ["delete-buffer"],
+               ["send-keys", "-X", "-t", pid, "clear-selection"]]
+    drift = int(sh(
+        ["tmux", "display-message", "-p", "-t", pid, "#{scroll_position}"]
+    ).strip() or 0) - pane.scroll_position
+    if drift > 0:
+        restore.append(
+            ["send-keys", "-X", "-t", pid, "-N", str(drift), "scroll-down"]
+        )
+    elif drift < 0:
+        restore.append(
+            ["send-keys", "-X", "-t", pid, "-N", str(-drift), "scroll-up"]
+        )
+    restore.append(["send-keys", "-X", "-t", pid, "top-line"])
+    if pane.cursor_y:
+        restore.append(
+            ["send-keys", "-X", "-t", pid, "-N", str(pane.cursor_y), "cursor-down"]
+        )
+    sh_tmux_batch(restore)
+
+    if not top.strip() and not bottom.strip():
+        return None
+    depth = pane.scroll_position + pane.height + min(8000, pane.history_size)
+    window = sh(
+        ["tmux", "capture-pane", "-p", "-t", pid,
+         "-S", str(-depth), "-E", str(pane.height - 1)]
+    )[:-1].split("\n")
+    h = pane.height
+    hits = [
+        k for k in range(0, max(0, len(window) - h + 1))
+        if window[k].rstrip() == top and window[k + h - 1].rstrip() == bottom
+    ]
+    if len(hits) != 1:
+        return None
+    k = hits[0]
+    return window[k : k + h]
+
+
+def _read_frozen_view(pane) -> Optional[list]:
+    """Read a frozen copy-mode view directly, row by row, through
+    #{copy_cursor_line} (the SCREEN row under the cursor — wrap
+    continuations, literal tabs and CJK come back exactly as displayed;
+    requires tmux >= 3.6, see _direct_view_read_ok). This is the only source that cannot
+    disagree with what the user sees: capture-pane reads the LIVE grid,
+    which drifts from the frozen snapshot whenever the pane's program
+    rewrites its screen in place or the scrollback is rewrapped by a
+    width change.
+
+    The whole walk is one tmux invocation: hide the position indicator
+    (it is rendered INTO the view's top row), walk top-line +
+    cursor-down reading each row, then restore the indicator and the
+    cursor (best effort). Returns None if the read comes back
+    malformed (callers fall back to a live capture)."""
+    pid = pane.pane_id
+    h = pane.height
+    cmds = [
+        ["send-keys", "-X", "-t", pid, "toggle-position"],
+        ["send-keys", "-X", "-t", pid, "top-line"],
+    ]
+    for i in range(h):
+        cmds.append(["display-message", "-p", "-t", pid, "#{copy_cursor_line}"])
+        if i < h - 1:
+            cmds.append(["send-keys", "-X", "-t", pid, "cursor-down"])
+    cmds.append(["send-keys", "-X", "-t", pid, "toggle-position"])
+    # cursor restore: back to the recorded ROW only. No start-of-line
+    # (on a wrap-continuation row it walks above the view and shifts
+    # scroll — the #18 hazard) and no column restore (cursor-right can
+    # wrap to the next row; the column is cosmetic here, the row is
+    # what jump navigation anchors on).
+    cmds.append(["send-keys", "-X", "-t", pid, "top-line"])
+    if pane.cursor_y:
+        cmds.append(
+            ["send-keys", "-X", "-t", pid, "-N", str(pane.cursor_y), "cursor-down"]
+        )
+    rows = sh_tmux_batch(cmds).split("\n")[:-1]
+    if len(rows) != h:
+        return None
+    return [r.rstrip() for r in rows]
+
+
 def tmux_capture_pane(pane):
-    """Optimized pane content capture"""
+    """Freeze the pane and capture its (now frozen) content.
+
+    Entering copy-mode freezes the pane's view and coordinate system at
+    that instant (semantics locked by test_copy_mode_freezes_view), so
+    everything captured here stays valid for the whole overlay session.
+    The capture reads the LIVE grid, so history_size is read before and
+    after in the same invocation and the capture retried until stable.
+
+    A pane already in copy-mode (frozen by OUR previous jump — marked
+    with the @easymotion_frozen_hist pane option — or by the user
+    themselves) shows a frozen snapshot that capture-pane cannot see and
+    that the live grid drifts away from (in-place TUI rewrites,
+    scrollback rewrap on width changes). On tmux >= 3.6 its content is
+    read directly off the frozen view via #{copy_cursor_line}; older
+    tmux falls back to the legacy live-grid approximations above.
+
+    Panes frozen here must be released via release_frozen().
+    """
     if not pane.height or not pane.width:
         return []
 
-    cmd = ["tmux", "capture-pane", "-p", "-t", pane.pane_id]
+    if pane.copy_mode and _direct_view_read_ok():
+        # already frozen (ours or the user's): read the view itself
+        pane.frozen = True
+        pane.was_in_mode = pane.frozen_hist is None  # no marker: theirs
+        frame = _read_frozen_view(pane)
+        if frame is not None:
+            return frame
+
+    if not _direct_view_read_ok():
+        if pane.copy_mode and pane.frozen_hist is None and not pane.frozen:
+            # the USER froze this pane: reconstruct the view they see
+            frame = _reconstruct_user_frozen_frame(pane)
+            if frame is not None:
+                pane.frozen = True
+                pane.was_in_mode = True  # theirs: never cancel it
+                return frame[: pane.height]
+
+        if pane.copy_mode and pane.frozen_hist is not None:
+            # re-trigger on a pane WE froze: serve the frame cache,
+            # splicing in immutable history if the user scrolled
+            pane.frozen = True
+            pane.was_in_mode = False  # our freeze: release may cancel it
+            cache = None
+            try:
+                with open(_frozen_frame_path(pane.pane_id)) as f:
+                    cache = f.read().split("\n")
+            except OSError:
+                pass  # cache lost: fall through to a live capture
+            if cache is not None:
+                s1 = pane.scroll_position
+                if s1 == 0:
+                    return cache[: pane.height]
+                delta = max(0, pane.history_size - pane.frozen_hist)
+                hist_rows = _capture_scrollback(
+                    pane.pane_id, delta + s1, pane.height
+                )
+                frame = [
+                    hist_rows[i] if i < len(hist_rows) else ""
+                    for i in range(pane.height)
+                ]
+                for i in range(pane.height):
+                    band_idx = i - s1
+                    if 0 <= band_idx < len(cache):
+                        frame[i] = cache[band_idx]
+                return frame
+
+    base = ["capture-pane", "-p", "-t", pane.pane_id]
     if pane.scroll_position > 0:
         end_pos = -(pane.scroll_position - pane.height + 1)
-        cmd.extend(["-S", str(-pane.scroll_position), "-E", str(end_pos)])
+        base.extend(["-S", str(-pane.scroll_position), "-E", str(end_pos)])
 
-    # Keep literal tabs: cursor-right steps through tmux's cell buffer
-    # one char at a time, so true_col must count against this same string.
-    return sh(cmd)[:-1].split("\n")[: pane.height]
+    hist_fmt = ["display-message", "-p", "-t", pane.pane_id, "#{history_size}"]
+    mark_fmt = [
+        "set-option", "-pF", "-t", pane.pane_id,
+        "@easymotion_frozen_hist", "#{history_size}",
+    ]
+    rows: list = []
+    for _ in range(3):
+        cmds = []
+        if not pane.frozen and not pane.copy_mode:
+            cmds.append(["copy-mode", "-t", pane.pane_id])
+            cmds.append(mark_fmt)
+        cmds += [hist_fmt, base, hist_fmt]
+        out = sh_tmux_batch(cmds)[:-1].split("\n")
+        hist_a, rows, hist_b = out[0], out[1:-1], out[-1]
+        if not pane.frozen:
+            pane.was_in_mode = pane.copy_mode
+            pane.frozen = True
+            pane.copy_mode = True
+        if hist_a == hist_b:
+            break
+    rows = rows[: pane.height]
+    if not pane.was_in_mode and not _direct_view_read_ok():
+        # legacy re-trigger path needs the frozen frame cached.
+        # Keep literal tabs: cursor-right steps through tmux's cell
+        # buffer one char at a time, so true_col must count against
+        # this same string.
+        try:
+            with open(_frozen_frame_path(pane.pane_id), "w") as f:
+                f.write("\n".join(rows))
+        except OSError:
+            pass
+    return rows
+
+
+def release_frozen(panes, keep=None):
+    """Leave copy-mode on every pane WE froze (not ones the user had in
+    copy-mode already), except ``keep`` (the jump target stays put) and
+    panes the user has SCROLLED (a scrolled view means they positioned
+    it to read something — cancelling would dump them to the live
+    bottom; a pane we froze fresh this session is always at scroll 0)."""
+    cmds = []
+    for p in panes:
+        if (p.frozen and p is not keep and not p.was_in_mode
+                and not p.scroll_position):
+            cmds.append(["send-keys", "-X", "-t", p.pane_id, "cancel"])
+            cmds.append(["set-option", "-p", "-t", p.pane_id,
+                         "-u", "@easymotion_frozen_hist"])
+            try:
+                os.unlink(_frozen_frame_path(p.pane_id))
+            except OSError:
+                pass
+        p.frozen = False
+    if keep is not None:
+        keep.frozen = False
+    if cmds:
+        sh_tmux_batch(cmds)
+
+
+# Diagnostic trace of the last tmux_move_cursor run (tests dump it on
+# failure so CI-only geometry issues carry their own evidence).
+NAV_TRACE: list = []
+
+
+def _cursor_steps(line: str, true_col: int) -> int:
+    """copy-mode cursor-right steps to reach string index ``true_col``:
+    the cursor moves one grid CELL per step, and zero-width chars
+    (combining marks etc.) ride along with their base cell instead of
+    costing a step of their own."""
+    return sum(1 for ch in line[:true_col] if _char_width_no_tab(ch) > 0)
 
 
 @perf_timer("Moving cursor")
 def tmux_move_cursor(pane, line_num, true_col):
+    """Move the copy-mode cursor to (line_num, true_col) of the captured
+    view: guarded, anchored, verified, corrected.
+
+    Copy-mode movement hazards this routes around (each reproduced in the
+    test suite): start-of-line at the top of the view walks above it when
+    that row continues a wrapped logical line, shifting scroll and every
+    later row count; cursor-right/left wrap across lines instead of
+    clamping; goto-line anchors at the last USED line, not the screen
+    bottom. No single blind command sequence survives all of them, so the
+    first shot uses the cheapest reliable path per state and a read-back
+    loop repairs the rest — including restoring the original scroll so
+    the user's view doesn't shift."""
     pid = pane.pane_id
+    NAV_TRACE.clear()
+    NAV_TRACE.append(
+        f"target=({line_num},{true_col}) scroll={pane.scroll_position} "
+        f"h={pane.height} hist={pane.history_size} copy={pane.copy_mode}"
+    )
+
+    line = pane.lines[line_num] if line_num < len(pane.lines) else ""
+
+    # The pane was FROZEN at capture time (copy-mode pins the view and
+    # its coordinates), so captured coordinates cannot go stale — no
+    # retargeting or content re-checks needed. Only two things can break
+    # the frozen state: zoom toggling (resets copy-mode scroll) and the
+    # mode being exited underneath us; cancel in those cases.
+    state = sh(
+        ["tmux", "display-message", "-p", "-t", pid,
+         "#{window_zoomed_flag},#{pane_in_mode},"
+         "#{copy_cursor_y},#{scroll_position}"]
+    ).strip()
+    zoomed, in_mode, cy0, base_scroll = state.split(",")
+    NAV_TRACE.append(f"guard state: {state!r}")
+    if (zoomed == "1") != pane.zoomed or in_mode != "1":
+        NAV_TRACE.append("guard: CANCELLED (zoom/mode changed)")
+        sh(["tmux", "display-message", "easymotion: pane changed, jump cancelled"])
+        return
+    cy0 = int(cy0 or 0)
+    # The scroll reference is measured NOW, not at capture: on
+    # long-frozen streaming panes the same scroll number can re-anchor
+    # to different content once the buffer grows, so the only safe
+    # invariant is "do not move scroll at all".
+    base_scroll = int(base_scroll or 0)
+
+    steps = _cursor_steps(line, true_col)
+    expected_cell = get_string_width(line[:true_col])
+
     cmds = [["select-pane", "-t", pid]]
-    if not pane.copy_mode:
-        cmds.append(["copy-mode", "-t", pid])
 
     def x(*args):
         cmds.append(["send-keys", "-X", "-t", pid, *args])
 
-    # start-of-line on row 0 (instead of after cursor-down) so it can't
-    # walk into a wrapped *logical* line above the target — issue #18.
-    x("top-line")
-    x("start-of-line")
-
-    # tmux's cursor-down keeps an "at end of line" bias via lastcx/lastsx.
-    # cursor-down on an empty row never updates lastsx, so a later
-    # cursor-down -N drags the cursor to the end of every non-empty row
-    # it crosses (visible on tmux 3.6+ when the pane has leading empty
-    # rows, e.g. Claude Code's UI). Walk to the first non-empty row and
-    # run start-of-line to prime lastsx > 0, then absorb the walk into
-    # the main descent so we don't pay an extra cursor-up round-trip.
-    first_non_empty = next((i for i, line in enumerate(pane.lines) if line), 0)
-    rows_remaining = line_num
-    if 0 < first_non_empty <= line_num:
-        x("-N", str(first_non_empty), "cursor-down")
+    if pane.scroll_position > 0:
+        # Scrolled pane: navigate RELATIVE to the current cursor row —
+        # never goto-line (its landing row proved unreliable on
+        # long-frozen panes, and the resulting scroll excursion
+        # re-anchors the frozen view against the grown buffer: same
+        # scroll number, shifted content — reproduced in the field).
+        # Row moves stay inside the view, so scroll cannot change. The
+        # column is left arbitrary; the verify loop places it from
+        # measured state.
+        if line_num > cy0:
+            x("-N", str(line_num - cy0), "cursor-down")
+        elif line_num < cy0:
+            x("-N", str(cy0 - line_num), "cursor-up")
+    else:
+        # Unscrolled pane: top-line is exact (row 0). start-of-line may
+        # still walk above the view when row 0 continues a wrapped line
+        # in history — the verify loop repairs that case. The walk to the
+        # first non-empty row primes tmux's lastcx/lastsx column bias so
+        # cursor-down doesn't drag the cursor to line ends (tmux 3.6+).
+        x("top-line")
         x("start-of-line")
-        rows_remaining -= first_non_empty
+        first_non_empty = next(
+            (i for i, ln in enumerate(pane.lines) if ln), 0
+        )
+        rows_remaining = line_num
+        if 0 < first_non_empty <= line_num:
+            x("-N", str(first_non_empty), "cursor-down")
+            x("start-of-line")
+            rows_remaining -= first_non_empty
+        if rows_remaining > 0:
+            x("-N", str(rows_remaining), "cursor-down")
+        if steps > 0:
+            x("-N", str(steps), "cursor-right")
+    # the position read rides in the same batch (display-message output
+    # is the batch's only stdout line)
+    cmds.append(
+        ["display-message", "-p", "-t", pid,
+         "#{copy_cursor_y},#{copy_cursor_x},#{scroll_position}"]
+    )
+    NAV_TRACE.append(f"first shot: {cmds}")
+    state = sh_tmux_batch(cmds).strip().split("\n")[-1]
 
-    if rows_remaining > 0:
-        x("-N", str(rows_remaining), "cursor-down")
-    if true_col > 0:
-        x("-N", str(true_col), "cursor-right")
-
-    sh_tmux_batch(cmds)
+    # Closed loop: verify the landing against measured state and repair.
+    # Each round fixes ONE thing (scroll restore, then row, then column)
+    # and re-measures via a read appended to the correction batch itself
+    # — never start-of-line here: on a wrap-continuation target row it
+    # walks to the logical line start and re-triggers the very shift
+    # being repaired (reproduced on CI).
+    for _ in range(6):
+        y_now, x_now, scroll_now = (int(v or 0) for v in state.split(","))
+        NAV_TRACE.append(f"verify read: {state!r}")
+        k = scroll_now - base_scroll
+        dy = line_num + k - y_now
+        dx = expected_cell - x_now
+        cmds = []
+        if k > 0:
+            # restore the user's view first; later rounds then work in
+            # original view coordinates
+            x("-N", str(k), "scroll-down")
+        elif k < 0:
+            x("-N", str(-k), "scroll-up")
+        elif dy > 0:
+            x("-N", str(dy), "cursor-down")
+        elif dy < 0:
+            x("-N", str(-dy), "cursor-up")
+        elif dx != 0:
+            # convert the measured CELL position to cursor steps via the
+            # captured row content — cursor-right/left move one cell
+            # entry per step and wrap at line edges, so a raw cell delta
+            # overshoots on wide chars and can jump rows
+            idx_now = get_true_position(line, x_now)
+            move = steps - _cursor_steps(line, idx_now)
+            if move > 0:
+                x("-N", str(move), "cursor-right")
+            elif move < 0:
+                x("-N", str(-move), "cursor-left")
+            else:
+                break  # cell mismatch but same step position (edge cell)
+        else:
+            break
+        cmds.append(
+            ["display-message", "-p", "-t", pid,
+             "#{copy_cursor_y},#{copy_cursor_x},#{scroll_position}"]
+        )
+        NAV_TRACE.append(f"correction: {cmds}")
+        state = sh_tmux_batch(cmds).strip().split("\n")[-1]
 
 
 def assign_hints_by_distance(
@@ -1091,49 +1524,61 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
     # Null-object so every fallback below reads uniformly.
     startup = startup or StartupInfo(None, None, "")
     panes, max_x = init_panes(startup.panes_info)
+    global _live_panes
+    _live_panes = panes
 
-    # Get motion type from command line argument
+    # Motion type from argv; the search chars are read from the
+    # overlay's own stdin (the binding opens this window via new-window
+    # -d; panes are frozen above, the frame below draws before reading).
     motion_type = sys.argv[1] if len(sys.argv) > 1 else "s"
-
-    # Determine search mode and find matches
-    if motion_type == "s":
-        # 1 char search
-        search_pattern = getch(sys.argv[2], 1)
-        search_pattern = search_pattern.replace("\n", "").replace("\r", "")
-        if not search_pattern:
-            return
-        matches = find_matches(
-            panes,
-            search_pattern,
-            case_sensitive=config.case_sensitive,
-            smartsign=config.smartsign,
-        )
-    elif motion_type == "s2":
-        # 2 char search
-        raw_input = getch(sys.argv[2], 2)
-        logging.debug(f"Raw input (s2): {repr(raw_input)}")
-        search_pattern = raw_input.replace("\n", "").replace("\r", "")
-        logging.debug(f"Search pattern (s2): {repr(search_pattern)}")
-        if not search_pattern:
-            return
-        matches = find_matches(
-            panes,
-            search_pattern,
-            case_sensitive=config.case_sensitive,
-            smartsign=config.smartsign,
-        )
-    else:
+    if motion_type not in ("s", "s2"):
         logging.error(f"Invalid motion type: {motion_type}")
+        release_frozen(panes)
         exit(1)
+    num_chars = 2 if motion_type == "s2" else 1
+
+    terminal_width, terminal_height = (
+        startup.terminal_size or get_terminal_size()
+    )
+    # show the frozen frame, then switch the client to the (detached)
+    # overlay window only when it is fully drawn — no flicker; keys
+    # pressed meanwhile hit the frozen source panes' copy-mode, never
+    # the shell
+    draw_all_panes(
+        panes,
+        max_x,
+        terminal_height,
+        screen,
+        config.vertical_border,
+        config.horizontal_border,
+    )
+    screen.refresh()
+    overlay_window_id = startup.window_id or get_current_window_id()
+    sh(["tmux", "select-window", "-t", overlay_window_id])
+
+    raw = getch(None, num_chars)
+    logging.debug(f"Raw input ({motion_type}): {repr(raw)}")
+    search_pattern = raw.replace("\n", "").replace("\r", "")
+    if len(search_pattern) < num_chars:
+        release_frozen(panes)
+        return
+    matches = find_matches(
+        panes,
+        search_pattern,
+        case_sensitive=config.case_sensitive,
+        smartsign=config.smartsign,
+    )
 
     # Check for matches
     if len(matches) == 0:
         sh(["tmux", "display-message", "no match"])
+        release_frozen(panes)
         return
     # If only one match, jump directly
     if len(matches) == 1:
         pane, line_num, col = matches[0]
         true_col = get_true_position(pane.lines[line_num], col)
+        release_frozen(panes, keep=pane)
         tmux_move_cursor(pane, line_num, true_col)
         return
 
@@ -1168,24 +1613,14 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
                     )
                 )
 
-    terminal_width, terminal_height = startup.terminal_size or get_terminal_size()
-    draw_all_panes(
-        panes,
-        max_x,
-        terminal_height,
-        screen,
-        config.vertical_border,
-        config.horizontal_border,
-    )
     draw_all_hints(positions, terminal_height, screen)
-    overlay_window_id = startup.window_id or get_current_window_id()
-    sh(["tmux", "select-window", "-t", overlay_window_id])
 
     # Handle user input
     key_sequence = ""
     while True:
         ch = getch()
         if ch not in config.hints:
+            release_frozen(panes)
             return
 
         key_sequence += ch
@@ -1194,9 +1629,11 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
         if target:
             pane, line_num, col = target
             true_col = get_true_position(pane.lines[line_num], col)
+            release_frozen(panes, keep=pane)
             tmux_move_cursor(pane, line_num, true_col)
             return  # Exit after finding and moving to target
         elif len(key_sequence) >= 2:  # If no target found after 2 chars
+            release_frozen(panes)
             return  # Exit program
         else:
             # Update display to show remaining possible hints
@@ -1204,7 +1641,24 @@ def main(screen: Screen, config: Config, startup: Optional[StartupInfo] = None):
 
 
 if __name__ == "__main__":
-    startup = get_startup_info()  # primes options cache + tmux version
+    # overlay-input mode (no search chars in argv): we run inside the
+    # focused overlay window; the source panes are in the LAST window
+    _source_window = None
+    if "--source" in sys.argv:
+        i = sys.argv.index("--source")
+        _source_window = sys.argv[i + 1]
+        del sys.argv[i : i + 2]
+
+    # Switch stdin to raw immediately so keys typed right after the
+    # binding (before the frame is drawn) land in the input queue for
+    # getch instead of being absorbed by the canonical line editor. Keys
+    # in the first ~25ms (interpreter startup) can still be lost — below
+    # any human keypress interval.
+    _saved_termios = None
+    if sys.stdin.isatty():
+        _saved_termios = termios.tcgetattr(sys.stdin.fileno())
+        tty.setraw(sys.stdin.fileno())
+    startup = get_startup_info(_source_window or "!")
     config = Config.from_tmux()
     screen: Screen = Curses(config) if config.use_curses else AnsiSequence(config)
     try:
@@ -1215,4 +1669,9 @@ if __name__ == "__main__":
     except Exception as e:
         logging.error(f"Error occurred: {str(e)}", exc_info=True)
     finally:
+        release_frozen(_live_panes)
+        if _saved_termios is not None:
+            termios.tcsetattr(
+                sys.stdin.fileno(), termios.TCSADRAIN, _saved_termios
+            )
         screen.cleanup()
