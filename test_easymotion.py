@@ -1728,8 +1728,9 @@ def test_capture_leaves_pane_mode_untouched(tmux_server):
 
 
 @requires_tmux
-@requires_view_read
 def test_scrolled_jump_lands_after_buffer_growth(tmux_server):
+    # not view-read gated: the landing assertion reads only ASCII rows,
+    # which #{copy_cursor_line} returns correctly even on tmux < 3.6
     """Field incident: hints were right but the jump landed rows off on
     the SECOND trigger. The copy-mode buffer keeps growing at the bottom
     while frozen (streaming pane), so replaying goto-line with the
