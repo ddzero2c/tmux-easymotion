@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.4.0](https://github.com/ddzero2c/tmux-easymotion/compare/v1.3.0...v1.4.0) (2026-07-19)
+
+
+### Features
+
+* frozen-frame overlay — freeze at binding, in-overlay input, verified navigator ([#39](https://github.com/ddzero2c/tmux-easymotion/issues/39)) ([76c0573](https://github.com/ddzero2c/tmux-easymotion/commit/76c05739adbf396174cc81a822188a9e3248dd81))
+
+
+### Bug Fixes
+
+* perf/debug logging silently broken by pre-setup logging call ([#37](https://github.com/ddzero2c/tmux-easymotion/issues/37)) ([de332f4](https://github.com/ddzero2c/tmux-easymotion/commit/de332f4dbf96eaf6c140a28878ccce2baedd43e9))
+
+
+### Performance Improvements
+
+* batch all startup tmux queries into a single invocation ([#35](https://github.com/ddzero2c/tmux-easymotion/issues/35)) ([b7490ad](https://github.com/ddzero2c/tmux-easymotion/commit/b7490add11b30bfc68a92efaa187b3149bcf7adf))
+* remove dead O(n²) scan in find_matches, batch tmux calls in cursor move ([#33](https://github.com/ddzero2c/tmux-easymotion/issues/33)) ([b225b21](https://github.com/ddzero2c/tmux-easymotion/commit/b225b218f8fefd4851ef38e3e3866f788330aa44))
+
 ## [1.3.0](https://github.com/ddzero2c/tmux-easymotion/compare/v1.2.2...v1.3.0) (2026-06-03)
 
 

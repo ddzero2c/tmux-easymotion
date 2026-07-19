@@ -19,7 +19,7 @@ Add plugin to the list of [TPM](https://github.com/tmux-plugins/tpm) plugins in 
 
 <!-- x-release-please-start-version -->
 ```bash
-set -g @plugin 'ddzero2c/tmux-easymotion#v1.3.0'
+set -g @plugin 'ddzero2c/tmux-easymotion#v1.4.0'
 set -g @easymotion-s 's'
 ```
 <!-- x-release-please-end -->
