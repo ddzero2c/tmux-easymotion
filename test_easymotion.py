@@ -955,6 +955,23 @@ def tmux_available():
 requires_tmux = pytest.mark.skipif(not tmux_available(), reason="tmux not available")
 
 
+def _server_tmux_version() -> tuple:
+    try:
+        out = subprocess.run(["tmux", "-V"], capture_output=True, text=True).stdout
+    except FileNotFoundError:
+        return (0, 0)
+    return easymotion._parse_tmux_version(out.strip())
+
+
+# The direct frozen-view read needs #{copy_cursor_line} without the
+# wide-char truncation bug (fixed in tmux 3.6); older tmux uses the
+# legacy live-grid approximations with their documented limitations.
+requires_view_read = pytest.mark.skipif(
+    _server_tmux_version() < (3, 6),
+    reason="frozen-view direct read needs tmux >= 3.6",
+)
+
+
 class TmuxTestServer:
     """Manage a separate tmux server for integration testing.
 
@@ -1308,8 +1325,8 @@ def assert_cursor_on_content(server, pane_id, expected_text, expected_col=None):
 
 def test_frozen_frame_path_is_server_scoped(monkeypatch):
     """Two tmux servers both have a pane %0 — their frozen-frame caches
-    must not collide (isolated test servers would otherwise clobber the
-    user's real cache)."""
+    (legacy tmux < 3.6 path) must not collide (isolated test servers
+    would otherwise clobber the user's real cache)."""
     from easymotion import _frozen_frame_path
 
     monkeypatch.setenv("TMUX", "/tmp/tmux-501/default,123,0")
@@ -1708,6 +1725,157 @@ def test_capture_leaves_pane_mode_untouched(tmux_server):
          "-t", pane_id, "#{pane_in_mode}"],
         capture_output=True, text=True).stdout.strip()
     assert in_mode == "0"
+
+
+@requires_tmux
+@requires_view_read
+def test_scrolled_jump_lands_after_buffer_growth(tmux_server):
+    """Field incident: hints were right but the jump landed rows off on
+    the SECOND trigger. The copy-mode buffer keeps growing at the bottom
+    while frozen (streaming pane), so replaying goto-line with the
+    captured scroll number repositions relative to the NEW bottom and
+    shifts the view by however many rows arrived since. Navigation must
+    land on the captured content regardless of growth."""
+    pane_id = tmux_server.pane_id
+    tmux_server.send_keys(
+        "clear; for i in $(seq 1 30); do echo S_$i; done; "
+        "sleep 1.2; for i in $(seq 31 60); do echo S_$i; sleep 0.05; done",
+        "Enter",
+    )
+    time.sleep(0.4)
+    tmux_server.tmx("copy-mode", "-t", pane_id)
+    tmux_server.tmx("send-keys", "-X", "-t", pane_id, "-N", "8", "scroll-up")
+    time.sleep(1.4)  # streaming has resumed while frozen
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        pane.lines = tmux_capture_pane(pane)
+        target_line = next(
+            i for i, ln in enumerate(pane.lines)
+            if ln.startswith("S_") and i >= 2
+        )
+        expected = pane.lines[target_line]
+        # the user reads the hints and picks one; the pane keeps
+        # streaming under the freeze the whole time. Guard the premise:
+        # the buffer bottom must actually grow between capture and jump,
+        # or the regression under test isn't being exercised.
+        hist_at_capture = int(tmux_server.tmx(
+            "display-message", "-p", "-t", pane_id, "#{history_size}"))
+        assert _wait_for(lambda: int(tmux_server.tmx(
+            "display-message", "-p", "-t", pane_id, "#{history_size}"
+        )) > hist_at_capture), "buffer did not grow during the hint window"
+        tmux_move_cursor(pane, target_line, 1)
+
+    time.sleep(0.1)
+    landed = tmux_server.tmx(
+        "display-message", "-p", "-t", pane_id, "#{copy_cursor_line}"
+    ).rstrip()
+    assert landed == expected, (
+        f"cursor landed on {landed!r}, target was {expected!r}"
+    )
+
+
+@requires_tmux
+def test_scrolled_jump_never_moves_scroll(tmux_server):
+    """Design lock from the second field incident: goto-line's landing
+    row is not reliable on long-frozen streaming panes, and the large
+    scroll excursion the correction loop then performs re-anchors the
+    frozen view against the grown buffer — same scroll NUMBER, shifted
+    content. A jump within a scrolled frozen view must navigate
+    relative to the current cursor and never issue scroll-moving
+    commands (goto-line / scroll-up / scroll-down)."""
+    pane_id = tmux_server.pane_id
+    tmux_server.send_keys("clear; for i in $(seq 1 30); do echo S_$i; done",
+                          "Enter")
+    time.sleep(0.4)
+    tmux_server.tmx("copy-mode", "-t", pane_id)
+    tmux_server.tmx("send-keys", "-X", "-t", pane_id, "-N", "12", "scroll-up")
+    time.sleep(0.2)
+
+    issued = []
+    real_sh = tmux_server.make_sh_for_server()
+
+    def spy_sh(cmd):
+        issued.append(cmd)
+        return real_sh(cmd)
+
+    with patch("easymotion.sh", spy_sh):
+        pane = easymotion.get_initial_tmux_info()[0]
+        assert pane.scroll_position == 12
+        pane.lines = tmux_capture_pane(pane)
+        target_line = next(
+            i for i, ln in enumerate(pane.lines) if ln.startswith("S_")
+        )
+        expected = pane.lines[target_line]
+        issued.clear()
+        tmux_move_cursor(pane, target_line, 1)
+
+    flat = [tok for cmd in issued for tok in cmd]
+    for forbidden in ("goto-line", "scroll-up", "scroll-down"):
+        assert forbidden not in flat, (
+            f"jump issued {forbidden!r} on a scrolled frozen pane: {issued}"
+        )
+    tmux_server.tmx("send-keys", "-X", "-t", pane_id, "toggle-position")
+    landed = tmux_server.tmx(
+        "display-message", "-p", "-t", pane_id,
+        "#{scroll_position},#{copy_cursor_line}",
+    )
+    tmux_server.tmx("send-keys", "-X", "-t", pane_id, "toggle-position")
+    scroll_now, line_now = landed.split(",", 1)
+    assert scroll_now == "12", f"scroll moved to {scroll_now}"
+    assert line_now.rstrip() == expected, (
+        f"cursor on {line_now.rstrip()!r}, target {expected!r}"
+    )
+
+
+@requires_tmux
+def test_release_keeps_scrolled_pane_frozen(tmux_server):
+    """Field report: pane A stays frozen after a previous jump (carrying
+    our marker); the user scrolls up inside it to read, then triggers
+    again and jumps to pane B. Releasing must NOT cancel A — the user
+    demonstrably scrolled it to look at something, and cancelling dumps
+    them back to the live bottom. Only unscrolled panes we froze are
+    returned to live view."""
+    pane_a = tmux_server.pane_id
+    pane_b = tmux_server.split_window()
+    tmux_server.send_keys("clear; for i in $(seq 1 30); do echo A_$i; done",
+                          "Enter")
+    tmux_server.send_keys_to_pane(pane_b, "clear; echo B_target", "Enter")
+    time.sleep(0.4)
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        # session 1: freeze all, jump INTO pane A (A kept frozen+marked)
+        panes = easymotion.get_initial_tmux_info()
+        for p in panes:
+            p.lines = tmux_capture_pane(p)
+        pa = next(p for p in panes if p.pane_id == pane_a)
+        target = next(i for i, ln in enumerate(pa.lines)
+                      if ln.startswith("A_"))
+        easymotion.release_frozen(panes, keep=pa)
+        tmux_move_cursor(pa, target, 1)
+
+    # the user scrolls up inside the kept frozen pane to read
+    tmux_server.tmx("send-keys", "-X", "-t", pane_a, "-N", "10", "scroll-up")
+    time.sleep(0.2)
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        # session 2: re-trigger, jump to pane B this time
+        panes = easymotion.get_initial_tmux_info()
+        for p in panes:
+            p.lines = tmux_capture_pane(p)
+        pb = next(p for p in panes if p.pane_id == pane_b)
+        target = next(i for i, ln in enumerate(pb.lines)
+                      if ln.startswith("B_"))
+        easymotion.release_frozen(panes, keep=pb)
+        tmux_move_cursor(pb, target, 1)
+
+    state = tmux_server.tmx(
+        "display-message", "-p", "-t", pane_a,
+        "#{pane_in_mode},#{scroll_position}",
+    )
+    assert state == "1,10", (
+        f"scrolled pane A was dumped out of its frozen view: {state!r}"
+    )
 
 
 @requires_tmux
@@ -2202,6 +2370,137 @@ def test_scrolled_jump_wide_chars_and_giant_bottom_wrap(tmux_server):
     assert_frozen_cursor_on_content(
         tmux_server, tmux_server.pane_id, line,
         get_string_width(line[:true_col]),
+    )
+
+
+def read_frozen_view(server, height):
+    """Ground truth: what the frozen copy-mode view actually shows, read
+    row by row through #{copy_cursor_line} (a SCREEN row, not the logical
+    line — verified on tmux 3.4 and 3.6a). The position indicator is
+    rendered into the view's top row, so it is toggled off for the read."""
+    pid = server.pane_id
+    server.tmx("send-keys", "-X", "-t", pid, "toggle-position")
+    rows = []
+    server.tmx("send-keys", "-X", "-t", pid, "top-line")
+    for i in range(height):
+        rows.append(server.tmx(
+            "display-message", "-p", "-t", pid, "#{copy_cursor_line}"
+        ).rstrip())
+        if i < height - 1:
+            server.tmx("send-keys", "-X", "-t", pid, "cursor-down")
+    server.tmx("send-keys", "-X", "-t", pid, "toggle-position")
+    return rows
+
+
+@requires_tmux
+@requires_view_read
+def test_refrozen_capture_matches_view_after_reflow(tmux_server):
+    """Field incident 2026-07-19: the frozen view drifted progressively
+    (+1 row per long paragraph) against our recapture. That signature is
+    a scrollback REWRAP: any width change while frozen (border drag, a
+    different-sized client attaching, window-size latest across
+    sessions) rewraps live history in place — row counts shift at every
+    wrap point, history_size moves without any output, and no scalar
+    delta can realign snapshot coordinates with the live grid. The
+    recapture must equal the frozen view itself, row for row."""
+    tmux_server.send_keys(
+        "clear; for i in $(seq 1 12); do echo hist$i; done; "
+        "echo LONG$(printf 'x%.0s' {1..50}); "
+        "for i in $(seq 13 24); do echo hist$i; done",
+        "Enter",
+    )
+    time.sleep(0.5)
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        first = tmux_capture_pane(pane)  # our freeze
+        pane.lines = first
+        target = next(i for i, ln in enumerate(first) if ln.strip())
+        tmux_move_cursor(pane, target, 1)  # pane stays frozen
+
+        # the user scrolls up inside the frozen snapshot, then the
+        # window width changes (e.g. another client attaches): tmux
+        # rewraps the scrollback under the frozen view
+        tmux_server.tmx("send-keys", "-X", "-t", tmux_server.pane_id,
+                        "-N", "8", "scroll-up")
+        tmux_server.tmx("resize-window", "-t", "test", "-x", "24", "-y", "10")
+        time.sleep(0.3)
+
+        pane2 = easymotion.get_initial_tmux_info()[0]
+        frame = tmux_capture_pane(pane2)
+
+    view = read_frozen_view(tmux_server, pane2.height)
+    assert [r.rstrip() for r in frame] == view, (
+        "recapture does not match the frozen view the user sees:\n"
+        + "\n".join(
+            f"  row{i}: frame={f!r:24} view={v!r}"
+            for i, (f, v) in enumerate(zip(frame, view))
+        )
+    )
+
+
+@requires_tmux
+@requires_view_read
+def test_refrozen_capture_matches_view_after_tui_rewrite(tmux_server):
+    """Companion regression guard: a TUI erases and rewrites its screen
+    in place after our freeze while streaming on, and the user scrolls
+    back within the frozen snapshot. The recapture must equal the frozen
+    view row for row (this geometry exercises the history/screen-band
+    seam of the snapshot)."""
+    writer = (
+        "import sys,time\n"
+        "w=sys.stdout\n"
+        "for i in range(1,31): w.write(f'hist{i}\\n')\n"
+        "w.write('DIRTY_A\\nDIRTY_DUP\\nDIRTY_DUP\\nDIRTY_B\\n'); w.flush()\n"
+        "time.sleep(2.5)\n"
+        "w.write('\\x1b[4A\\x1b[0J')\n"  # erase the dirty block in place
+        "w.write('CLEAN_A\\nCLEAN_extra\\nCLEAN_B\\nCLEAN_C\\nCLEAN_D\\n')\n"
+        "w.flush()\n"
+        "for i in range(1,21):\n"
+        "    w.write(f'tail{i}\\n'); w.flush(); time.sleep(0.03)\n"
+    )
+    import tempfile
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".py", delete=False
+    ) as f:
+        f.write(writer)
+        writer_path = f.name
+    tmux_server.send_keys(f"clear; python3 {writer_path}", "Enter")
+    _wait_for(
+        lambda: "DIRTY_B" in tmux_server.tmx(
+            "capture-pane", "-p", "-t", tmux_server.pane_id
+        ),
+    )
+
+    with patch("easymotion.sh", tmux_server.make_sh_for_server()):
+        pane = easymotion.get_initial_tmux_info()[0]
+        first = tmux_capture_pane(pane)  # our freeze, dirty frame
+        assert any("DIRTY_DUP" in ln for ln in first)
+        pane.lines = first
+        target = next(i for i, ln in enumerate(first) if "DIRTY_A" in ln)
+        tmux_move_cursor(pane, target, 1)  # pane stays frozen
+
+        # the TUI rewrites in place and streams on while we are frozen
+        _wait_for(
+            lambda: "tail20" in tmux_server.tmx(
+                "capture-pane", "-p", "-t", tmux_server.pane_id
+            ),
+        )
+        # the user scrolls up inside the frozen snapshot; the view now
+        # straddles history rows AND the frozen screen band (the band
+        # is where in-place rewrites break live-grid arithmetic)
+        tmux_server.tmx("send-keys", "-X", "-t", tmux_server.pane_id,
+                        "-N", "6", "scroll-up")
+
+        pane2 = easymotion.get_initial_tmux_info()[0]
+        frame = tmux_capture_pane(pane2)
+
+    view = read_frozen_view(tmux_server, pane2.height)
+    assert [r.rstrip() for r in frame] == view, (
+        "recapture does not match the frozen view the user sees:\n"
+        + "\n".join(
+            f"  row{i}: frame={f!r:24} view={v!r}"
+            for i, (f, v) in enumerate(zip(frame, view))
+        )
     )
 
 
